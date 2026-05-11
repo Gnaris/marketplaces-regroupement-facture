@@ -1,0 +1,178 @@
+#pfs-regroup-btn {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  z-index: 2147483646;
+  background: #111;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 14px 24px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+#pfs-regroup-btn:hover {
+  background: #2a2a2a;
+  transform: translateY(-1px);
+}
+#pfs-regroup-btn:active {
+  transform: translateY(0);
+}
+
+#pfs-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 15, 15, 0.6);
+  z-index: 2147483647;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #111;
+}
+
+#pfs-modal {
+  background: #fff;
+  border-radius: 16px;
+  width: min(1100px, 94vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.4);
+}
+
+#pfs-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 28px;
+  border-bottom: 1px solid #eceef1;
+}
+#pfs-modal-header h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: #111;
+  letter-spacing: -0.01em;
+}
+#pfs-modal-close {
+  background: transparent;
+  border: none;
+  font-size: 32px;
+  line-height: 1;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 8px;
+}
+#pfs-modal-close:hover {
+  background: #f3f4f6;
+  color: #111;
+}
+
+#pfs-modal-body {
+  padding: 24px 28px 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+#pfs-modal-footer {
+  padding: 18px 28px 24px;
+  border-top: 1px solid #eceef1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+#pfs-close-btn {
+  background: #111;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 24px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#pfs-close-btn:hover {
+  background: #2a2a2a;
+}
+
+.pfs-order-info {
+  color: #5b6470;
+  font-size: 16px;
+  margin: 0 0 18px;
+}
+.pfs-order-info strong {
+  color: #111;
+  font-size: 17px;
+}
+
+#pfs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 17px;
+  color: #111;
+}
+#pfs-table th,
+#pfs-table td {
+  text-align: left;
+  padding: 14px 16px;
+  border-bottom: 1px solid #f3f4f6;
+  vertical-align: middle;
+}
+#pfs-table th {
+  font-weight: 600;
+  color: #5b6470;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: #fafbfc;
+}
+#pfs-table td strong {
+  font-weight: 700;
+  font-size: 17px;
+}
+#pfs-table th.r,
+#pfs-table td.r {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+#pfs-table tfoot td {
+  border-top: 2px solid #111;
+  border-bottom: none;
+  padding-top: 16px;
+  padding-bottom: 16px;
+  font-size: 18px;
+}
+#pfs-table tfoot strong {
+  font-size: 18px;
+}
+
+.pfs-info {
+  color: #5b6470;
+  font-size: 16px;
+}
+.pfs-error {
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  padding: 14px 16px;
+  border-radius: 10px;
+  font-size: 16px;
+  margin: 0;
+}
+.pfs-warn {
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 15px;
+  margin: 16px 0 4px;
+}

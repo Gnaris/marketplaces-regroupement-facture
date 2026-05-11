@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "Marketplaces Regroupement Facture",
+  "version": "3.2.0",
+  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore.",
+  "host_permissions": [
+    "https://wholesaler.parisfashionshops.com/*",
+    "https://wholesaler-api.parisfashionshops.com/*",
+    "https://wholesaler.efashion-paris.com/*",
+    "https://wapi.efashion-paris.com/*",
+    "https://*.ankorstore.com/*",
+    "https://www.faire.com/*",
+    "https://web.mc.app/*",
+    "https://*.dokkr.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://wholesaler.parisfashionshops.com/orders/*/details*",
+        "https://wholesaler.efashion-paris.com/orderdetails/*",
+        "https://*.ankorstore.com/account/orders/*",
+        "https://www.faire.com/brand-portal/orders/*"
+      ],
+      "js": ["content.js"],
+      "css": ["modal.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://web.mc.app/*",
+        "https://mc2-h5.dokkr.net/*"
+      ],
+      "all_frames": true,
+      "js": ["content.js"],
+      "css": ["modal.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": ["https://wholesaler.parisfashionshops.com/*"]
+    },
+    {
+      "resources": ["injected-mc.js"],
+      "matches": ["https://web.mc.app/*", "https://*.dokkr.net/*"]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# Données capturées (contiennent des infos personnelles de clients)
+samples/
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
