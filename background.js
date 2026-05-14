@@ -3,6 +3,26 @@ const EFP_QUERY = `query GetOrderDetail($id: Int!) {
     id_commande
     id_commande_name
     montantApresRemise
+    acheteur {
+      nomContact
+      prenomContact
+      email
+      nomSociete
+      tva_intra
+      eori
+    }
+    adresseFacturation {
+      adresse
+      codePostal
+      ville
+      telephone
+      mobile
+      NomContact
+      Societe
+      pays {
+        texte_fr
+      }
+    }
     lignes {
       prix
       prixReduit
@@ -91,20 +111,42 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
       return;
     }
     const apiBase = message.apiBase || "https://fr.ankorstore.com";
-    const url =
+    const headers = {
+      Accept: "application/vnd.api+json, application/json, */*",
+      "X-Requested-With": "XMLHttpRequest"
+    };
+    const itemsUrl =
       apiBase +
       "/api/internal/v1/ordering/orders/" +
       encodeURIComponent(orderId) +
       "/order-items?include=orderedProduct";
-    fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/vnd.api+json, application/json, */*",
-        "X-Requested-With": "XMLHttpRequest"
-      },
-      credentials: "include"
-    })
-      .then(handleResponse(sendResponse))
+    const detailUrl =
+      apiBase +
+      "/api/internal/v1/ordering/orders/" +
+      encodeURIComponent(orderId);
+    Promise.all([
+      fetch(itemsUrl, { method: "GET", headers: headers, credentials: "include" }),
+      fetch(detailUrl, { method: "GET", headers: headers, credentials: "include" })
+    ])
+      .then(function (responses) {
+        const itemsResp = responses[0];
+        const detailResp = responses[1];
+        if (!itemsResp.ok) {
+          return itemsResp.text().then(function (body) {
+            sendResponse({
+              ok: false,
+              error: "Erreur API items (" + itemsResp.status + " " + itemsResp.statusText + ")",
+              body: body && body.slice ? body.slice(0, 300) : ""
+            });
+          });
+        }
+        return Promise.all([
+          itemsResp.json(),
+          detailResp.ok ? detailResp.json().catch(function () { return null; }) : null
+        ]).then(function (parsed) {
+          sendResponse({ ok: true, data: { items: parsed[0], detail: parsed[1] } });
+        });
+      })
       .catch(handleError(sendResponse));
     return true;
   }

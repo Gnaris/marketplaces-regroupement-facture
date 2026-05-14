@@ -167,6 +167,69 @@
   font-size: 16px;
   margin: 0;
 }
+.pfs-addresses {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  margin: 0 0 24px;
+}
+.pfs-address-block {
+  background: #fafbfc;
+  border: 1px solid #eceef1;
+  border-radius: 14px;
+  padding: 16px 20px 18px;
+}
+.pfs-address-block h3 {
+  margin: 0 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eceef1;
+  font-size: 12px;
+  font-weight: 700;
+  color: #5b6470;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.pfs-address-fields {
+  margin: 0;
+  padding: 0;
+  color: #111;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+.pfs-address-row {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  column-gap: 12px;
+  padding: 4px 0;
+  align-items: baseline;
+}
+.pfs-address-row dt {
+  margin: 0;
+  font-weight: 600;
+  color: #4b5563;
+  font-size: 13.5px;
+}
+.pfs-address-row dd {
+  margin: 0;
+  color: #111;
+  word-break: break-word;
+}
+.pfs-address-note {
+  grid-column: 1 / -1;
+  font-style: italic;
+  color: #6b7280;
+}
+.pfs-address-empty {
+  margin: 0;
+  color: #9ca3af;
+}
+@media (max-width: 720px) {
+  .pfs-address-row {
+    grid-template-columns: 1fr;
+    padding: 6px 0;
+  }
+}
+
 .pfs-warn {
   color: #92400e;
   background: #fffbeb;

@@ -3,6 +3,7 @@
   const HOST_EFP = "wholesaler.efashion-paris.com";
   const HOST_FAIRE = "www.faire.com";
   const HOST_MC = "web.mc.app";
+  const HOST_OC = "www.orderchamp.com";
   const host = location.hostname;
   let site = null;
   if (host === HOST_PFS) site = "pfs";
@@ -10,11 +11,28 @@
   else if (host.endsWith(".ankorstore.com")) site = "aks";
   else if (host === HOST_FAIRE) site = "faire";
   else if (host === HOST_MC || host.endsWith(".dokkr.net")) site = "mc";
+  else if (host === HOST_OC) site = "oc";
   if (!site) return;
 
   const isTopFrame = window.top === window.self;
 
   let cachedToken = null;
+  let cachedFaireCustomer = null;
+
+  if (site === "faire") {
+    const s = document.createElement("script");
+    s.src = chrome.runtime.getURL("injected-faire.js");
+    s.onload = function () { s.remove(); };
+    (document.head || document.documentElement).appendChild(s);
+
+    window.addEventListener("message", function (event) {
+      if (event.source !== window) return;
+      const d = event.data;
+      if (d && d.source === "faire-regroup" && d.type === "FAIRE_CUSTOMER" && d.data) {
+        cachedFaireCustomer = d.data;
+      }
+    });
+  }
 
   if (site === "pfs") {
     const s = document.createElement("script");
@@ -66,6 +84,10 @@
       return m ? m[1] : null;
     }
     if (site === "mc") return "mc";
+    if (site === "oc") {
+      const m = location.pathname.match(/\/backoffice\/orders\/(\d+)/);
+      return m ? m[1] : null;
+    }
     return null;
   }
 
@@ -75,6 +97,7 @@
     if (site === "aks") return /\/account\/orders\/[^\/]+/.test(location.pathname);
     if (site === "faire") return /\/brand-portal\/orders\/bo_[^\/\?]+/.test(location.pathname);
     if (site === "mc") return host === HOST_MC;
+    if (site === "oc") return /^\/[a-z]{2}\/backoffice\/orders\/\d+\/?$/.test(location.pathname);
     return false;
   }
 
@@ -105,6 +128,9 @@
   async function onRegroupClick() {
     if (site === "mc") {
       return onRegroupClickMc();
+    }
+    if (site === "oc") {
+      return onRegroupClickOc();
     }
     const orderId = getOrderId();
     if (!orderId) {
@@ -146,7 +172,24 @@
       if (site === "pfs") parsed = parsePfs(result.data);
       else if (site === "efp") parsed = parseEfp(result.data);
       else if (site === "aks") parsed = parseAks(result.data, orderId);
-      else parsed = parseFaire(result.data);
+      else parsed = parseFaire(result.data, cachedFaireCustomer);
+      showModal({ rows: parsed.rows, orderInfo: parsed.orderInfo });
+    } catch (e) {
+      showModal({ error: e && e.message ? e.message : String(e) });
+    }
+  }
+
+  function onRegroupClickOc() {
+    showModal({ loading: true });
+    try {
+      const parsed = parseOc();
+      if (!parsed.rows.length) {
+        showModal({
+          error:
+            "Aucun produit détecté sur la page. Attendez que la commande soit entièrement chargée, puis recliquez."
+        });
+        return;
+      }
       showModal({ rows: parsed.rows, orderInfo: parsed.orderInfo });
     } catch (e) {
       showModal({ error: e && e.message ? e.message : String(e) });
@@ -177,6 +220,13 @@
     } catch (e) {
       showModal({ error: e && e.message ? e.message : String(e) });
     }
+  }
+
+  function pushField(fields, label, value) {
+    if (value == null) return;
+    const v = String(value).replace(/\s+/g, " ").trim();
+    if (!v) return;
+    fields.push({ label: label || null, value: v });
   }
 
   function addRow(map, cat, price, qty) {
@@ -223,11 +273,29 @@
         }
       }
     }
+    const pfsAddresses = [];
+    const c = order.customer || {};
+    const b = c.billing_address || {};
+    const idn = c.identification_numbers || {};
+    const pfsBilling = [];
+    pushField(pfsBilling, "Nom de société", c.shop);
+    pushField(pfsBilling, "Nom du contact", c.name);
+    pushField(pfsBilling, "Adresse", b.street);
+    pushField(pfsBilling, "Code postal", b.postal_code);
+    pushField(pfsBilling, "Ville", b.city);
+    pushField(pfsBilling, "Pays", b.country);
+    pushField(pfsBilling, "Téléphone", c.phone);
+    pushField(pfsBilling, "SIRET", idn.siret);
+    pushField(pfsBilling, "N° TVA", idn.vat);
+    pushField(pfsBilling, "EORI", idn.eori);
+    if (pfsBilling.length) pfsAddresses.push({ title: "Adresse de facturation", fields: pfsBilling });
+
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: order.order_no || "",
-        totalVerif: typeof order.validated_vat === "number" ? order.validated_vat : null
+        totalVerif: typeof order.validated_vat === "number" ? order.validated_vat : null,
+        addresses: pfsAddresses
       }
     };
   }
@@ -255,11 +323,30 @@
       if (qty <= 0) continue;
       addRow(map, cat, price, qty);
     }
+    const efpAddresses = [];
+    const a = order.acheteur || {};
+    const f = order.adresseFacturation || {};
+    const efpBilling = [];
+    const efpCompany = (f.Societe || a.nomSociete || "").trim();
+    pushField(efpBilling, "Nom de société", efpCompany);
+    const efpName = [a.prenomContact, a.nomContact].filter(function (x) { return x && String(x).trim(); }).join(" ");
+    pushField(efpBilling, "Nom du contact", efpName);
+    pushField(efpBilling, "Adresse", f.adresse);
+    pushField(efpBilling, "Code postal", f.codePostal);
+    pushField(efpBilling, "Ville", f.ville);
+    pushField(efpBilling, "Pays", f.pays && f.pays.texte_fr);
+    pushField(efpBilling, "Téléphone", f.telephone || f.mobile);
+    pushField(efpBilling, "Email", a.email);
+    pushField(efpBilling, "N° TVA", a.tva_intra);
+    pushField(efpBilling, "EORI", a.eori);
+    if (efpBilling.length) efpAddresses.push({ title: "Adresse de facturation", fields: efpBilling });
+
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: order.id_commande_name || "",
-        totalVerif: typeof order.montantApresRemise === "number" ? order.montantApresRemise : null
+        totalVerif: typeof order.montantApresRemise === "number" ? order.montantApresRemise : null,
+        addresses: efpAddresses
       }
     };
   }
@@ -291,17 +378,19 @@
     return name;
   }
 
-  function parseAks(json, orderId) {
-    if (!json || !Array.isArray(json.data)) throw new Error("Réponse API invalide.");
+  function parseAks(payload, orderId) {
+    const itemsJson = payload && payload.items ? payload.items : payload;
+    const detailJson = payload && payload.detail ? payload.detail : null;
+    if (!itemsJson || !Array.isArray(itemsJson.data)) throw new Error("Réponse API invalide.");
     const productsById = new Map();
-    const included = Array.isArray(json.included) ? json.included : [];
+    const included = Array.isArray(itemsJson.included) ? itemsJson.included : [];
     for (const inc of included) {
       if (inc.type === "ordered-products" && inc.id && inc.attributes) {
         productsById.set(inc.id, inc.attributes);
       }
     }
     const map = new Map();
-    for (const item of json.data) {
+    for (const item of itemsJson.data) {
       if (item.type !== "order-items" || !item.attributes) continue;
       const a = item.attributes;
       const qty = typeof a.unitQuantity === "number" ? a.unitQuantity : 0;
@@ -319,10 +408,39 @@
       const cat = detectCategory(name);
       addRow(map, cat, price, qty);
     }
-    const shortId = orderId && orderId.length > 8 ? orderId.slice(0, 8) + "…" : orderId || "";
+
+    const aksAddresses = [];
+    let orderNo = "";
+    if (detailJson && detailJson.data && detailJson.data.attributes) {
+      const attr = detailJson.data.attributes;
+      if (attr.reference) orderNo = String(attr.reference);
+      const ship = attr.shipping && attr.shipping.shippingAddress;
+      if (ship) {
+        const addr = ship.address || {};
+        const cp = ship.contactPerson || {};
+        const shipFields = [];
+        pushField(shipFields, "Nom de société", ship.company);
+        const fullName = cp.fullName || [cp.firstName, cp.lastName].filter(function (x) { return x && String(x).trim(); }).join(" ");
+        if (fullName && fullName !== ship.company) pushField(shipFields, "Nom du contact", fullName);
+        pushField(shipFields, "Adresse", addr.addressLine);
+        pushField(shipFields, "Code postal", addr.postalCode);
+        pushField(shipFields, "Ville", addr.city);
+        pushField(shipFields, "Pays", addr.countryCode);
+        pushField(shipFields, "Téléphone", cp.phoneNumber);
+        pushField(shipFields, "Email", cp.email);
+        const retailer = attr.retailer || {};
+        const biz = retailer.business || {};
+        pushField(shipFields, "N° TVA", biz.vat_number);
+        pushField(shipFields, "SIRET", biz.tax_number);
+        if (shipFields.length) aksAddresses.push({ title: "Adresse de livraison", fields: shipFields });
+      }
+    }
+    if (!orderNo) {
+      orderNo = orderId && orderId.length > 8 ? orderId.slice(0, 8) + "…" : orderId || "";
+    }
     return {
       rows: sortRows(map),
-      orderInfo: { orderNo: shortId, totalVerif: null }
+      orderInfo: { orderNo: orderNo, totalVerif: null, addresses: aksAddresses }
     };
   }
 
@@ -343,16 +461,35 @@
       addRow(map, cat, price, qty);
     }
     const totalVerif = parseFloat(doc.total_price);
+
+    const addresses = [];
+    const ci = doc.client_info || {};
+    const shipFields = [];
+    const mcCompany = (ci.company_name || "").trim();
+    const mcFullName = [ci.first_name, ci.last_name].filter(function (x) { return x && String(x).trim(); }).join(" ").trim();
+    pushField(shipFields, "Nom de société", mcCompany);
+    if (mcFullName && mcFullName !== mcCompany) pushField(shipFields, "Nom du contact", mcFullName);
+    pushField(shipFields, "Adresse", ci.address);
+    pushField(shipFields, "Code postal", ci.zip);
+    pushField(shipFields, "Ville", ci.city);
+    pushField(shipFields, "Pays", ci.country);
+    pushField(shipFields, "Téléphone", ci.address_phone || ci.phone);
+    pushField(shipFields, "Email", ci.email);
+    pushField(shipFields, "N° TVA", ci.vat_num);
+    if (shipFields.length) addresses.push({ title: "Adresse de livraison", fields: shipFields });
+    addresses.push({ title: "Adresse de facturation", fields: [{ label: null, value: "Voir l'iPad" }] });
+
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: doc.number || doc.id || "",
-        totalVerif: isFinite(totalVerif) ? totalVerif : null
+        totalVerif: isFinite(totalVerif) ? totalVerif : null,
+        addresses: addresses
       }
     };
   }
 
-  function parseFaire(json) {
+  function parseFaire(json, customerData) {
     if (!json || !Array.isArray(json.items)) throw new Error("Réponse API invalide.");
     const map = new Map();
     for (const item of json.items) {
@@ -382,13 +519,213 @@
       json.item_subtotal && typeof json.item_subtotal.amount_cents === "number"
         ? json.item_subtotal.amount_cents
         : null;
+
+    const faireAddresses = [];
+    function faireAddrToFields(addr, storeName, contactName) {
+      if (!addr || typeof addr !== "object") return null;
+      const fields = [];
+      pushField(fields, "Nom de société", storeName);
+      const displayName = addr.name || contactName || "";
+      if (displayName && displayName !== storeName) pushField(fields, "Nom du contact", displayName);
+      pushField(fields, "Adresse", addr.address1);
+      if (addr.address2) pushField(fields, "Complément", addr.address2);
+      pushField(fields, "Code postal", addr.postal_code);
+      pushField(fields, "Ville", addr.city);
+      pushField(fields, "Pays", addr.country || addr.iso3_country_code || addr.country_code);
+      pushField(fields, "Téléphone", addr.phone_number || addr.phone);
+      pushField(fields, "Email", addr.email);
+      return fields.length ? fields : null;
+    }
+    if (customerData) {
+      const bcv = customerData.brand_customer_view || {};
+      const storeName = bcv.store_name || "";
+      const contactName = bcv.contact_name || "";
+      const shipping = customerData.default_shipping_address;
+      const shipFields = faireAddrToFields(shipping, storeName, contactName);
+      if (shipFields) faireAddresses.push({ title: "Adresse de livraison", fields: shipFields });
+      const rd = customerData.retailer_details || {};
+      const billing = rd.address;
+      const billFields = faireAddrToFields(billing, storeName, contactName);
+      if (billFields) faireAddresses.push({ title: "Adresse de facturation", fields: billFields });
+    } else {
+      console.log("[Faire] Aucune donnée customer interceptée. Rechargez la page de la commande pour que la requête soit captée.");
+    }
+
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: orderNo,
-        totalVerif: totalCents != null ? totalCents / 100 : null
+        totalVerif: totalCents != null ? totalCents / 100 : null,
+        addresses: faireAddresses
       }
     };
+  }
+
+  function parseEuroAmount(text) {
+    if (!text) return null;
+    const m = text.match(/([\d\s.,]+)\s*€/);
+    if (!m) return null;
+    const cleaned = m[1]
+      .replace(/\s/g, "")
+      .replace(/\.(?=\d{3}(?:[.,]|$))/g, "")
+      .replace(",", ".");
+    const val = parseFloat(cleaned);
+    return isFinite(val) ? val : null;
+  }
+
+  function parseOc() {
+    let orderNo = "";
+    const titleMatch = document.title.match(/OC\d+/i);
+    if (titleMatch) orderNo = titleMatch[0].toUpperCase();
+    if (!orderNo) {
+      const h1 = document.querySelector("h1");
+      if (h1) {
+        const m = h1.textContent.match(/OC\d+/i);
+        if (m) orderNo = m[0].toUpperCase();
+      }
+    }
+
+    const map = new Map();
+    const seenRows = new Set();
+
+    let links = document.querySelectorAll(
+      'a[href*="/backoffice/products/"]'
+    );
+    console.log("[OC] liens /backoffice/products/ trouvés :", links.length);
+
+    for (const link of links) {
+      const tr = link.closest("tr");
+      if (!tr || seenRows.has(tr)) continue;
+      const tds = tr.children;
+      if (tds.length < 4) continue;
+      let qtyPriceText = "";
+      let name = "";
+      for (const td of tds) {
+        const t = td.textContent || "";
+        if (/\d+\s*x\s*[\d\s.,]+\s*€/.test(t)) {
+          qtyPriceText = t;
+          break;
+        }
+      }
+      if (!qtyPriceText) continue;
+      name = (link.textContent || "").replace(/\s+/g, " ").trim();
+      if (!name) continue;
+      const m = qtyPriceText.match(/(\d+)\s*x\s*([\d\s.,]+)\s*€/);
+      if (!m) continue;
+      const qty = parseInt(m[1], 10);
+      const price = parseEuroAmount(m[2] + " €");
+      if (!qty || price == null) continue;
+      seenRows.add(tr);
+      const cat = detectCategory(name);
+      addRow(map, cat, price, qty);
+    }
+
+    console.log("[OC] lignes regroupées :", map.size, "numéro :", orderNo);
+
+    let totalVerif = null;
+    const totalTrs = document.querySelectorAll("table tr");
+    for (const tr of totalTrs) {
+      const tds = tr.children;
+      if (tds.length !== 2) continue;
+      const label = (tds[0].textContent || "").replace(/\s+/g, " ").trim();
+      if (label === "Total") {
+        const val = parseEuroAmount(tds[1].textContent);
+        if (val != null) {
+          totalVerif = val;
+          break;
+        }
+      }
+    }
+
+    const ocAddresses = parseOcAddresses();
+
+    return {
+      rows: sortRows(map),
+      orderInfo: { orderNo: orderNo, totalVerif: totalVerif, addresses: ocAddresses }
+    };
+  }
+
+  function parseOcAddresses() {
+    const addresses = [];
+    const strongs = document.querySelectorAll("strong");
+    for (const strong of strongs) {
+      const title = (strong.textContent || "").replace(/\s+/g, " ").trim();
+      if (title !== "Adresse de livraison" && title !== "Adresse de facturation") continue;
+      const lines = [];
+      let buf = "";
+      let n = strong.nextSibling;
+      while (n) {
+        if (n.nodeType === 1) {
+          const tag = n.tagName;
+          if (tag === "HR" || tag === "STRONG") break;
+          if (tag === "BR") {
+            if (buf.trim()) lines.push(buf.replace(/\s+/g, " ").trim());
+            buf = "";
+          } else {
+            buf += n.textContent || "";
+          }
+        } else if (n.nodeType === 3) {
+          buf += n.textContent;
+        }
+        n = n.nextSibling;
+      }
+      if (buf.trim()) lines.push(buf.replace(/\s+/g, " ").trim());
+      const cleaned = lines.filter(function (l) { return l && l.length; });
+      if (cleaned.length) addresses.push({ title: title, fields: ocLinesToFields(cleaned) });
+    }
+    return addresses;
+  }
+
+  function ocLinesToFields(lines) {
+    const fields = [];
+    const nonSpecial = [];
+    let vat = "";
+    let registration = "";
+    for (const line of lines) {
+      let m;
+      if ((m = line.match(/^Num[ée]ro\s+de\s+TVA\s*[:\-]?\s*(.+)$/i))) {
+        vat = m[1].trim();
+      } else if ((m = line.match(/^Num[ée]ro\s+d['’]enregistrement\s*[:\-]?\s*(.+)$/i))) {
+        registration = m[1].trim();
+      } else {
+        nonSpecial.push(line);
+      }
+    }
+    const cpRegex = /^(\d{2,6}[A-Za-z]{0,3})\s+(.+)$/;
+    let cpIdx = -1;
+    for (let i = 0; i < nonSpecial.length; i++) {
+      if (cpRegex.test(nonSpecial[i])) { cpIdx = i; break; }
+    }
+    let company = "", contactName = "", address1 = "", postalCode = "", city = "", country = "";
+    if (cpIdx >= 0) {
+      const m = nonSpecial[cpIdx].match(cpRegex);
+      postalCode = m[1];
+      city = m[2].trim();
+      if (cpIdx + 1 < nonSpecial.length) country = nonSpecial[cpIdx + 1];
+      const before = nonSpecial.slice(0, cpIdx);
+      if (before.length === 1) {
+        company = before[0];
+      } else if (before.length === 2) {
+        company = before[0];
+        address1 = before[1];
+      } else if (before.length >= 3) {
+        company = before[0];
+        contactName = before[1];
+        address1 = before.slice(2).join(", ");
+      }
+    }
+    pushField(fields, "Nom de société", company);
+    pushField(fields, "Nom du contact", contactName);
+    pushField(fields, "Adresse", address1);
+    pushField(fields, "Code postal", postalCode);
+    pushField(fields, "Ville", city);
+    pushField(fields, "Pays", country);
+    pushField(fields, "N° TVA", vat);
+    pushField(fields, "N° d'enregistrement", registration);
+    if (!fields.length) {
+      for (const l of nonSpecial) fields.push({ label: null, value: l });
+    }
+    return fields;
   }
 
   function fmtEuro(n) {
@@ -489,12 +826,40 @@
     );
     body.appendChild(info);
 
+    const addresses = Array.isArray(orderInfo.addresses) ? orderInfo.addresses : [];
+    if (addresses.length) {
+      const wrap = el("div", { className: "pfs-addresses" });
+      for (const addr of addresses) {
+        const block = el("div", { className: "pfs-address-block" });
+        block.appendChild(el("h3", { text: addr.title || "" }));
+        const dl = el("dl", { className: "pfs-address-fields" });
+        const fields = addr.fields || [];
+        if (!fields.length) {
+          dl.appendChild(el("dd", { className: "pfs-address-empty", text: "—" }));
+        } else {
+          for (const f of fields) {
+            const row = el("div", { className: "pfs-address-row" });
+            if (f.label) {
+              row.appendChild(el("dt", { text: f.label + " :" }));
+              row.appendChild(el("dd", { text: f.value }));
+            } else {
+              row.appendChild(el("dd", { className: "pfs-address-note", text: f.value }));
+            }
+            dl.appendChild(row);
+          }
+        }
+        block.appendChild(dl);
+        wrap.appendChild(block);
+      }
+      body.appendChild(wrap);
+    }
+
     const table = el("table", { id: "pfs-table" });
     const thead = el("thead", null, [
       el("tr", null, [
         el("th", { text: "Catégorie" }),
-        el("th", { text: "Prix unitaire" }),
         el("th", { className: "r", text: "Quantité" }),
+        el("th", { text: "Prix unitaire" }),
         el("th", { className: "r", text: "Sous-total HT" })
       ])
     ]);
@@ -509,8 +874,8 @@
       if (showCat) catCell.appendChild(el("strong", { text: r.categorie }));
       tbody.appendChild(el("tr", null, [
         catCell,
-        el("td", { text: fmtEuro(r.prixUnitaire) }),
         el("td", { className: "r", text: String(r.quantite) }),
+        el("td", { text: fmtEuro(r.prixUnitaire) }),
         el("td", { className: "r", text: fmtEuro(r.prixUnitaire * r.quantite) })
       ]));
     }
@@ -519,7 +884,7 @@
     const tfoot = el("tfoot", null, [
       el("tr", null, [
         (function () {
-          const td = el("td", { colspan: "2" });
+          const td = el("td");
           td.appendChild(el("strong", { text: "Total" }));
           return td;
         })(),
@@ -528,6 +893,7 @@
           td.appendChild(el("strong", { text: String(totalQty) }));
           return td;
         })(),
+        el("td"),
         (function () {
           const td = el("td", { className: "r" });
           td.appendChild(el("strong", { text: fmtEuro(totalHT) }));
