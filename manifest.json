@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.6.0",
-  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp.",
+  "version": "3.7.0",
+  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify.",
   "host_permissions": [
     "https://wholesaler.parisfashionshops.com/*",
     "https://wholesaler-api.parisfashionshops.com/*",
@@ -12,7 +12,8 @@
     "https://www.faire.com/*",
     "https://web.mc.app/*",
     "https://*.dokkr.net/*",
-    "https://www.orderchamp.com/*"
+    "https://www.orderchamp.com/*",
+    "https://admin.shopify.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -24,7 +25,8 @@
         "https://wholesaler.efashion-paris.com/orderdetails/*",
         "https://*.ankorstore.com/account/orders/*",
         "https://www.faire.com/brand-portal/orders/*",
-        "https://www.orderchamp.com/*/backoffice/orders/*"
+        "https://www.orderchamp.com/*/backoffice/orders/*",
+        "https://admin.shopify.com/store/*/orders/*"
       ],
       "js": ["content.js"],
       "css": ["modal.css"],
@@ -53,6 +55,23 @@
     {
       "resources": ["injected-faire.js"],
       "matches": ["https://www.faire.com/*"]
+    },
+    {
+      "resources": ["injected-shopify.js"],
+      "matches": ["https://admin.shopify.com/*"]
+    },
+    {
+      "resources": ["z.png", "img1.png", "img2.png", "img3.png", "img4.png", "img5.png", "img6.png"],
+      "matches": [
+        "https://wholesaler.parisfashionshops.com/*",
+        "https://wholesaler.efashion-paris.com/*",
+        "https://*.ankorstore.com/*",
+        "https://www.faire.com/*",
+        "https://web.mc.app/*",
+        "https://*.dokkr.net/*",
+        "https://www.orderchamp.com/*",
+        "https://admin.shopify.com/*"
+      ]
     }
   ]
 }

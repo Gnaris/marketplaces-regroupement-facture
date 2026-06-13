@@ -4,6 +4,7 @@
   const HOST_FAIRE = "www.faire.com";
   const HOST_MC = "web.mc.app";
   const HOST_OC = "www.orderchamp.com";
+  const HOST_SHOPIFY = "admin.shopify.com";
   const host = location.hostname;
   let site = null;
   if (host === HOST_PFS) site = "pfs";
@@ -12,12 +13,14 @@
   else if (host === HOST_FAIRE) site = "faire";
   else if (host === HOST_MC || host.endsWith(".dokkr.net")) site = "mc";
   else if (host === HOST_OC) site = "oc";
+  else if (host === HOST_SHOPIFY) site = "shopify";
   if (!site) return;
 
   const isTopFrame = window.top === window.self;
 
   let cachedToken = null;
   let cachedFaireCustomer = null;
+  let cachedShopifyCsrf = null;
 
   if (site === "faire") {
     const s = document.createElement("script");
@@ -66,6 +69,21 @@
     if (!isTopFrame) return;
   }
 
+  if (site === "shopify") {
+    const s = document.createElement("script");
+    s.src = chrome.runtime.getURL("injected-shopify.js");
+    s.onload = function () { s.remove(); };
+    (document.head || document.documentElement).appendChild(s);
+
+    window.addEventListener("message", function (event) {
+      if (event.source !== window) return;
+      const d = event.data;
+      if (d && d.source === "shopify-regroup" && d.type === "CSRF_TOKEN" && d.token) {
+        cachedShopifyCsrf = d.token;
+      }
+    });
+  }
+
   function getOrderId() {
     if (site === "pfs") {
       const m = location.pathname.match(/\/orders\/([^\/]+)\/details/);
@@ -88,6 +106,23 @@
       const m = location.pathname.match(/\/backoffice\/orders\/(\d+)/);
       return m ? m[1] : null;
     }
+    if (site === "shopify") {
+      const m = location.pathname.match(/^\/store\/[^\/]+\/orders\/(\d+)/);
+      return m ? m[1] : null;
+    }
+    return null;
+  }
+
+  function getShopifyStoreName() {
+    const m = location.pathname.match(/^\/store\/([^\/]+)\/orders\/\d+/);
+    return m ? m[1] : null;
+  }
+
+  function getShopifyCsrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta && meta.content) return meta.content;
+    const input = document.querySelector('input[name="authenticity_token"], input[name="csrf_token"]');
+    if (input && input.value) return input.value;
     return null;
   }
 
@@ -98,6 +133,7 @@
     if (site === "faire") return /\/brand-portal\/orders\/bo_[^\/\?]+/.test(location.pathname);
     if (site === "mc") return host === HOST_MC;
     if (site === "oc") return /^\/[a-z]{2}\/backoffice\/orders\/\d+\/?$/.test(location.pathname);
+    if (site === "shopify") return /^\/store\/[^\/]+\/orders\/\d+\/?$/.test(location.pathname);
     return false;
   }
 
@@ -125,7 +161,21 @@
   const observer = new MutationObserver(ensureButton);
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
+  function isExtensionContextAlive() {
+    try {
+      return !!(chrome && chrome.runtime && chrome.runtime.id);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  const CONTEXT_LOST_MSG = "L'extension a été rechargée. Rechargez la page (F5) pour continuer.";
+
   async function onRegroupClick() {
+    if (!isExtensionContextAlive()) {
+      showModal({ error: CONTEXT_LOST_MSG });
+      return;
+    }
     if (site === "mc") {
       return onRegroupClickMc();
     }
@@ -145,25 +195,45 @@
       return;
     }
 
+    let shopifyStoreName = null;
+    let shopifyCsrfToken = null;
+    if (site === "shopify") {
+      shopifyStoreName = getShopifyStoreName();
+      shopifyCsrfToken = cachedShopifyCsrf || getShopifyCsrfToken();
+      if (!shopifyCsrfToken) {
+        showModal({
+          error:
+            "Jeton CSRF Shopify pas encore capté. Naviguez dans le menu Shopify (ou rechargez la page) puis recliquez sur le bouton."
+        });
+        return;
+      }
+    }
+
     showModal({ loading: true });
     try {
       const result = await new Promise(function (resolve) {
-        chrome.runtime.sendMessage(
-          {
-            type: "FETCH_ORDER",
-            site: site,
-            orderId: orderId,
-            token: cachedToken,
-            apiBase: site === "aks" ? location.origin : undefined
-          },
-          function (response) {
-            if (chrome.runtime.lastError) {
-              resolve({ ok: false, error: chrome.runtime.lastError.message });
-            } else {
-              resolve(response || { ok: false, error: "Pas de réponse du service worker." });
+        try {
+          chrome.runtime.sendMessage(
+            {
+              type: "FETCH_ORDER",
+              site: site,
+              orderId: orderId,
+              token: cachedToken,
+              apiBase: site === "aks" ? location.origin : undefined,
+              storeName: shopifyStoreName,
+              csrfToken: shopifyCsrfToken
+            },
+            function (response) {
+              if (chrome.runtime.lastError) {
+                resolve({ ok: false, error: chrome.runtime.lastError.message });
+              } else {
+                resolve(response || { ok: false, error: "Pas de réponse du service worker." });
+              }
             }
-          }
-        );
+          );
+        } catch (e) {
+          resolve({ ok: false, error: CONTEXT_LOST_MSG });
+        }
       });
       if (!result.ok) {
         throw new Error(result.error || "Erreur inconnue");
@@ -172,6 +242,7 @@
       if (site === "pfs") parsed = parsePfs(result.data);
       else if (site === "efp") parsed = parseEfp(result.data);
       else if (site === "aks") parsed = parseAks(result.data, orderId);
+      else if (site === "shopify") parsed = parseShopify(result.data);
       else parsed = parseFaire(result.data, cachedFaireCustomer);
       showModal({ rows: parsed.rows, orderInfo: parsed.orderInfo });
     } catch (e) {
@@ -197,15 +268,23 @@
   }
 
   async function onRegroupClickMc() {
+    if (!isExtensionContextAlive()) {
+      showModal({ error: CONTEXT_LOST_MSG });
+      return;
+    }
     showModal({ loading: true });
     const result = await new Promise(function (resolve) {
-      chrome.runtime.sendMessage({ type: "GET_MC_ORDER" }, function (response) {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: chrome.runtime.lastError.message });
-        } else {
-          resolve(response || { ok: false, error: "Pas de réponse du service worker." });
-        }
-      });
+      try {
+        chrome.runtime.sendMessage({ type: "GET_MC_ORDER" }, function (response) {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+          } else {
+            resolve(response || { ok: false, error: "Pas de réponse du service worker." });
+          }
+        });
+      } catch (e) {
+        resolve({ ok: false, error: CONTEXT_LOST_MSG });
+      }
     });
     if (!result.ok || !result.data) {
       showModal({
@@ -313,14 +392,9 @@
     for (const ligne of lignes) {
       if (ligne.corbeille === 1) continue;
       const cat = ligne.categorie || "Sans catégorie";
-      const price =
-        typeof ligne.prixReduit === "number" && ligne.prixReduit > 0
-          ? ligne.prixReduit
-          : typeof ligne.prix === "number"
-          ? ligne.prix
-          : 0;
       const qty = typeof ligne.quantite_total === "number" ? ligne.quantite_total : 0;
       if (qty <= 0) continue;
+      const price = ligne.prixLigne / qty;
       addRow(map, cat, price, qty);
     }
     const efpAddresses = [];
@@ -561,6 +635,79 @@
     };
   }
 
+  function parseShopify(json) {
+    if (json && json.errors && json.errors.length) {
+      throw new Error("GraphQL : " + json.errors.map(function (e) { return e.message; }).join(" | "));
+    }
+    if (!json || !json.data || !json.data.order) throw new Error("Réponse API invalide.");
+    const order = json.data.order;
+    const map = new Map();
+    const edges =
+      order.lineItems && Array.isArray(order.lineItems.edges) ? order.lineItems.edges : [];
+    for (const edge of edges) {
+      const node = edge && edge.node;
+      if (!node) continue;
+      const qty =
+        typeof node.currentQuantity === "number"
+          ? node.currentQuantity
+          : typeof node.quantity === "number"
+          ? node.quantity
+          : 0;
+      if (qty <= 0) continue;
+      const money =
+        node.originalUnitPriceSet && node.originalUnitPriceSet.shopMoney
+          ? node.originalUnitPriceSet.shopMoney
+          : null;
+      const price = money ? parseFloat(money.amount) || 0 : 0;
+      const cat = detectCategory(node.title);
+      addRow(map, cat, price, qty);
+    }
+
+    function shopifyAddrToFields(addr) {
+      if (!addr || typeof addr !== "object") return null;
+      const fields = [];
+      pushField(fields, "Nom de société", addr.company);
+      const fullName =
+        addr.name ||
+        [addr.firstName, addr.lastName].filter(function (x) { return x && String(x).trim(); }).join(" ");
+      if (fullName && fullName !== addr.company) pushField(fields, "Nom du contact", fullName);
+      pushField(fields, "Adresse", addr.address1);
+      if (addr.address2) pushField(fields, "Complément", addr.address2);
+      pushField(fields, "Code postal", addr.zip);
+      pushField(fields, "Ville", addr.city);
+      pushField(fields, "Pays", addr.country || addr.countryCodeV2);
+      pushField(fields, "Téléphone", addr.phone);
+      return fields.length ? fields : null;
+    }
+
+    const addresses = [];
+    const shipFields = shopifyAddrToFields(order.shippingAddress);
+    if (shipFields) addresses.push({ title: "Adresse de livraison", fields: shipFields });
+    if (order.billingAddressMatchesShippingAddress && shipFields) {
+      addresses.push({
+        title: "Adresse de facturation",
+        fields: [{ label: null, value: "Identique à l'adresse de livraison" }]
+      });
+    } else {
+      const billFields = shopifyAddrToFields(order.billingAddress);
+      if (billFields) addresses.push({ title: "Adresse de facturation", fields: billFields });
+    }
+
+    const subtotal =
+      order.subtotalPriceSet && order.subtotalPriceSet.shopMoney
+        ? parseFloat(order.subtotalPriceSet.shopMoney.amount)
+        : NaN;
+
+    return {
+      rows: sortRows(map),
+      orderInfo: {
+        orderNo: order.name || "",
+        totalVerif: isFinite(subtotal) ? subtotal : null,
+        addresses: addresses
+      }
+    };
+  }
+
   function parseEuroAmount(text) {
     if (!text) return null;
     const m = text.match(/([\d\s.,]+)\s*€/);
@@ -732,6 +879,94 @@
     return n.toFixed(2).replace(".", ",") + " €";
   }
 
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(tag, attrs) {
+    const node = document.createElementNS(SVG_NS, tag);
+    if (attrs) for (const k in attrs) node.setAttribute(k, attrs[k]);
+    return node;
+  }
+
+  function buildCopyIcon() {
+    const svg = svgEl("svg", {
+      width: "14", height: "14", viewBox: "0 0 24 24", fill: "none",
+      stroke: "currentColor", "stroke-width": "2",
+      "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true"
+    });
+    svg.appendChild(svgEl("rect", { x: "9", y: "9", width: "13", height: "13", rx: "2", ry: "2" }));
+    svg.appendChild(svgEl("path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" }));
+    return svg;
+  }
+
+  function buildCheckIcon() {
+    const svg = svgEl("svg", {
+      width: "14", height: "14", viewBox: "0 0 24 24", fill: "none",
+      stroke: "currentColor", "stroke-width": "2.5",
+      "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true"
+    });
+    svg.appendChild(svgEl("polyline", { points: "20 6 9 17 4 12" }));
+    return svg;
+  }
+
+  function replaceIcon(btn, iconNode) {
+    while (btn.firstChild) btn.removeChild(btn.firstChild);
+    btn.appendChild(iconNode);
+  }
+
+  function fallbackCopy(text) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      ta.style.top = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function flashCopyOk(btn) {
+    btn.classList.add("pfs-copy-ok");
+    replaceIcon(btn, buildCheckIcon());
+    btn.setAttribute("aria-label", "Copié");
+    btn.title = "Copié !";
+    clearTimeout(btn._pfsTimer);
+    btn._pfsTimer = setTimeout(function () {
+      btn.classList.remove("pfs-copy-ok");
+      replaceIcon(btn, buildCopyIcon());
+      btn.setAttribute("aria-label", "Copier");
+      btn.title = "Copier";
+    }, 1200);
+  }
+
+  function makeCopyButton(value) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pfs-copy-btn";
+    btn.title = "Copier";
+    btn.setAttribute("aria-label", "Copier");
+    btn.appendChild(buildCopyIcon());
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).then(function () {
+          flashCopyOk(btn);
+        }).catch(function () {
+          if (fallbackCopy(value)) flashCopyOk(btn);
+        });
+      } else {
+        if (fallbackCopy(value)) flashCopyOk(btn);
+      }
+    });
+    return btn;
+  }
+
   function el(tag, props, children) {
     const node = document.createElement(tag);
     if (props) {
@@ -749,6 +984,20 @@
       }
     }
     return node;
+  }
+
+  let _originalRows = [];
+  let _secretClickCount = 0;
+
+  function getSecretFactor(clicks) {
+    if (clicks < 3) return 1;
+    return 2 + Math.floor((clicks - 3) / 2);
+  }
+
+  function onSecretImgClick() {
+    if (!_originalRows.length) return;
+    _secretClickCount++;
+    renderRowsTable();
   }
 
   function ensureOverlay() {
@@ -770,7 +1019,30 @@
     ]);
 
     const body = el("div", { id: "pfs-modal-body" });
+
+    const imgNames = ["z.png", "img1.png", "img2.png", "img3.png", "img4.png", "img5.png", "img6.png"];
+    for (let i = imgNames.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = imgNames[i]; imgNames[i] = imgNames[j]; imgNames[j] = tmp;
+    }
+    const imgStrip = el("div", { id: "pfs-img-strip" });
+    for (const name of imgNames) {
+      const img = el("img", {
+        className: "pfs-mini-img",
+        src: chrome.runtime.getURL(name),
+        alt: "",
+        "aria-hidden": "true",
+        draggable: "false"
+      });
+      if (name === "z.png") {
+        img.id = "pfs-secret-img";
+        img.addEventListener("click", onSecretImgClick);
+      }
+      imgStrip.appendChild(img);
+    }
+
     const footer = el("div", { id: "pfs-modal-footer" }, [
+      imgStrip,
       el("button", { id: "pfs-close-btn", type: "button", text: "Fermer", onClick: hideModal })
     ]);
 
@@ -789,6 +1061,85 @@
     return overlay;
   }
 
+  function buildRowsTable(rows) {
+    const totalQty = rows.reduce(function (s, r) { return s + r.quantite; }, 0);
+    const totalHT = rows.reduce(function (s, r) { return s + r.quantite * r.prixUnitaire; }, 0);
+
+    const table = el("table", { id: "pfs-table" });
+    const thead = el("thead", null, [
+      el("tr", null, [
+        el("th", { text: "Catégorie" }),
+        el("th", { className: "r", text: "Quantité" }),
+        el("th", { text: "Prix unitaire" }),
+        el("th", { className: "r", text: "Sous-total HT" })
+      ])
+    ]);
+    table.appendChild(thead);
+
+    const tbody = el("tbody");
+    let prevCat = null;
+    let groupIdx = -1;
+    for (const r of rows) {
+      if (r.categorie !== prevCat) {
+        groupIdx++;
+        prevCat = r.categorie;
+      }
+      const catCell = el("td");
+      catCell.appendChild(el("strong", { text: r.categorie }));
+      const tr = el("tr", { className: groupIdx % 2 === 0 ? "pfs-cat-a" : "pfs-cat-b" }, [
+        catCell,
+        el("td", { className: "r", text: String(r.quantite) }),
+        el("td", { text: fmtEuro(r.prixUnitaire) }),
+        el("td", { className: "r", text: fmtEuro(r.prixUnitaire * r.quantite) })
+      ]);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+
+    const tfoot = el("tfoot", null, [
+      el("tr", null, [
+        (function () {
+          const td = el("td");
+          td.appendChild(el("strong", { text: "Total" }));
+          return td;
+        })(),
+        (function () {
+          const td = el("td", { className: "r" });
+          td.appendChild(el("strong", { text: String(totalQty) }));
+          return td;
+        })(),
+        el("td"),
+        (function () {
+          const td = el("td", { className: "r" });
+          td.appendChild(el("strong", { text: fmtEuro(totalHT) }));
+          return td;
+        })()
+      ])
+    ]);
+    table.appendChild(tfoot);
+    return table;
+  }
+
+  function renderRowsTable() {
+    const body = document.getElementById("pfs-modal-body");
+    if (!body) return;
+    const factor = getSecretFactor(_secretClickCount);
+    const rows = _originalRows.map(function (r) {
+      return {
+        categorie: r.categorie,
+        prixUnitaire: r.prixUnitaire / factor,
+        quantite: r.quantite * factor
+      };
+    });
+    const oldTable = document.getElementById("pfs-table");
+    const table = buildRowsTable(rows);
+    if (oldTable && oldTable.parentNode) {
+      oldTable.parentNode.replaceChild(table, oldTable);
+    } else {
+      body.appendChild(table);
+    }
+  }
+
   function showModal(state) {
     const overlay = ensureOverlay();
     overlay.style.display = "flex";
@@ -796,6 +1147,9 @@
     const body = document.getElementById("pfs-modal-body");
     const footer = document.getElementById("pfs-modal-footer");
     while (body.firstChild) body.removeChild(body.firstChild);
+
+    _originalRows = [];
+    _secretClickCount = 0;
 
     if (state.loading) {
       body.appendChild(el("p", { className: "pfs-info", text: "Chargement de la commande…" }));
@@ -810,8 +1164,6 @@
 
     const rows = state.rows || [];
     const orderInfo = state.orderInfo || {};
-    const totalQty = rows.reduce(function (s, r) { return s + r.quantite; }, 0);
-    const totalHT = rows.reduce(function (s, r) { return s + r.quantite * r.prixUnitaire; }, 0);
 
     const info = el("p", { className: "pfs-order-info" });
     info.appendChild(document.createTextNode("Commande "));
@@ -842,6 +1194,7 @@
             if (f.label) {
               row.appendChild(el("dt", { text: f.label + " :" }));
               row.appendChild(el("dd", { text: f.value }));
+              row.appendChild(makeCopyButton(f.value));
             } else {
               row.appendChild(el("dd", { className: "pfs-address-note", text: f.value }));
             }
@@ -854,55 +1207,9 @@
       body.appendChild(wrap);
     }
 
-    const table = el("table", { id: "pfs-table" });
-    const thead = el("thead", null, [
-      el("tr", null, [
-        el("th", { text: "Catégorie" }),
-        el("th", { className: "r", text: "Quantité" }),
-        el("th", { text: "Prix unitaire" }),
-        el("th", { className: "r", text: "Sous-total HT" })
-      ])
-    ]);
-    table.appendChild(thead);
-
-    const tbody = el("tbody");
-    let prevCat = null;
-    for (const r of rows) {
-      const showCat = r.categorie !== prevCat;
-      prevCat = r.categorie;
-      const catCell = el("td");
-      if (showCat) catCell.appendChild(el("strong", { text: r.categorie }));
-      tbody.appendChild(el("tr", null, [
-        catCell,
-        el("td", { className: "r", text: String(r.quantite) }),
-        el("td", { text: fmtEuro(r.prixUnitaire) }),
-        el("td", { className: "r", text: fmtEuro(r.prixUnitaire * r.quantite) })
-      ]));
-    }
-    table.appendChild(tbody);
-
-    const tfoot = el("tfoot", null, [
-      el("tr", null, [
-        (function () {
-          const td = el("td");
-          td.appendChild(el("strong", { text: "Total" }));
-          return td;
-        })(),
-        (function () {
-          const td = el("td", { className: "r" });
-          td.appendChild(el("strong", { text: String(totalQty) }));
-          return td;
-        })(),
-        el("td"),
-        (function () {
-          const td = el("td", { className: "r" });
-          td.appendChild(el("strong", { text: fmtEuro(totalHT) }));
-          return td;
-        })()
-      ])
-    ]);
-    table.appendChild(tfoot);
-    body.appendChild(table);
+    _originalRows = rows.slice();
+    _secretClickCount = 0;
+    body.appendChild(buildRowsTable(rows));
 
     footer.style.display = "flex";
   }

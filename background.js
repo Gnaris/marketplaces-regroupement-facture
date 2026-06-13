@@ -1,3 +1,35 @@
+const SHOPIFY_QUERY = `query OrderRegroup($id: ID!) {
+  order(id: $id) {
+    name
+    subtotalPriceSet { shopMoney { amount currencyCode } }
+    billingAddressMatchesShippingAddress
+    shippingAddress {
+      name firstName lastName company
+      address1 address2 city zip
+      provinceCode countryCodeV2 country
+      phone
+    }
+    billingAddress {
+      name firstName lastName company
+      address1 address2 city zip
+      provinceCode countryCodeV2 country
+      phone
+    }
+    lineItems(first: 250) {
+      edges {
+        node {
+          title
+          quantity
+          currentQuantity
+          variantTitle
+          sku
+          originalUnitPriceSet { shopMoney { amount currencyCode } }
+        }
+      }
+    }
+  }
+}`;
+
 const EFP_QUERY = `query GetOrderDetail($id: Int!) {
   commandeById(id: $id) {
     id_commande
@@ -24,8 +56,7 @@ const EFP_QUERY = `query GetOrderDetail($id: Int!) {
       }
     }
     lignes {
-      prix
-      prixReduit
+      prixLigne
       quantite_total
       corbeille
       categorie
@@ -165,6 +196,52 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
       headers: {
         Accept: "application/json, */*"
       },
+      credentials: "include"
+    })
+      .then(handleResponse(sendResponse))
+      .catch(handleError(sendResponse));
+    return true;
+  }
+
+  if (site === "shopify") {
+    if (!orderId) {
+      sendResponse({ ok: false, error: "ID commande manquant." });
+      return;
+    }
+    const storeName = message.storeName;
+    const csrfToken = message.csrfToken;
+    if (!storeName) {
+      sendResponse({ ok: false, error: "Nom de boutique Shopify manquant." });
+      return;
+    }
+    if (!csrfToken) {
+      sendResponse({
+        ok: false,
+        error:
+          "Jeton CSRF Shopify introuvable. Rechargez la page (F5) et recliquez sur le bouton."
+      });
+      return;
+    }
+    const url =
+      "https://admin.shopify.com/api/shopify/" +
+      encodeURIComponent(storeName) +
+      "?operation=OrderRegroup";
+    const body = JSON.stringify({
+      query: SHOPIFY_QUERY,
+      operationName: "OrderRegroup",
+      operationType: "query",
+      variables: { id: "gid://shopify/Order/" + orderId }
+    });
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "X-CSRF-Token": csrfToken,
+        "Shopify-Proxy-Api-Enable": "true",
+        "Apollographql-Client-Name": "core"
+      },
+      body: body,
       credentials: "include"
     })
       .then(handleResponse(sendResponse))
