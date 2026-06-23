@@ -444,9 +444,25 @@
       if (/ajustable/.test(lower)) return "Bague ajustable";
       return "Bague";
     }
-    if (/collier/.test(lower)) return "Collier";
     if (/porte[\s-]?cl[ée]/.test(lower)) return "Porte clé";
     if (/pendentif/.test(lower)) return "Pendentif";
+    if (/\brobes?\b/.test(lower)) return "Robes";
+    if (/\bensembles?\b/.test(lower)) {
+      if (/\bjupes?\b/.test(lower)) return "Ensembles haut et jupe";
+      if (/\bpantalons?\b/.test(lower)) return "Ensembles haut et pantalon";
+      if (/\bshorts?\b/.test(lower)) return "Ensembles haut et short";
+      return "Ensembles";
+    }
+    if (/\b(?:t[\s-]?shirts?|tee[\s-]?shirts?)\b/.test(lower)) return "T-shirts";
+    if (/\bpantalons?\b/.test(lower)) return "Pantalons";
+    if (/\bjupes?\b/.test(lower)) return "Jupes";
+    if (/\bshorts?\b/.test(lower)) return "Shorts";
+    if (/\bchemisiers?\b/.test(lower)) return "Chemisiers";
+    if (/\bchemises?\b/.test(lower)) return "Chemises";
+    if (/\btops?\b/.test(lower)) return "Tops";
+    if (/\bblazers?\b/.test(lower)) return "Blazers";
+    if (/\bvestes?\b/.test(lower)) return "Vestes";
+    if (/collier/.test(lower)) return "Collier";
     const idx = name.indexOf(" - ");
     if (idx > 0) return name.slice(0, idx).trim();
     return name;
@@ -565,6 +581,7 @@
 
   function parseFaire(json, customerData) {
     if (!json || !Array.isArray(json.items)) throw new Error("Réponse API invalide.");
+    const products = json.products && typeof json.products === "object" ? json.products : {};
     const map = new Map();
     for (const item of json.items) {
       if (item.is_sample === true) continue;
@@ -583,7 +600,12 @@
       const baseQty = typeof item.item_quantity === "number" ? item.item_quantity : 0;
       const qty = baseQty * multiplier;
       if (qty <= 0) continue;
-      const cat = detectCategory(item.product_name);
+      const prod = item.product_token ? products[item.product_token] : null;
+      const groupName =
+        prod && prod.taxonomy_type && prod.taxonomy_type.group_name
+          ? String(prod.taxonomy_type.group_name).trim()
+          : "";
+      const cat = groupName || detectCategory(item.product_name);
       addRow(map, cat, price, qty);
     }
     const token =

@@ -221,25 +221,25 @@
   line-height: 1.5;
 }
 .pfs-address-row {
-  display: grid;
-  grid-template-columns: 140px 1fr auto;
-  column-gap: 12px;
-  padding: 4px 0;
+  display: flex;
   align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
 }
 .pfs-address-row dt {
   margin: 0;
   font-weight: 600;
   color: #4b5563;
   font-size: 13.5px;
+  flex: 0 0 140px;
 }
 .pfs-address-row dd {
   margin: 0;
   color: #111;
   word-break: break-word;
+  min-width: 0;
 }
 .pfs-address-note {
-  grid-column: 1 / -1;
   font-style: italic;
   color: #6b7280;
 }
@@ -273,11 +273,11 @@
 }
 @media (max-width: 720px) {
   .pfs-address-row {
-    grid-template-columns: 1fr auto;
+    flex-wrap: wrap;
     padding: 6px 0;
   }
   .pfs-address-row dt {
-    grid-column: 1 / -1;
+    flex: 0 0 100%;
   }
 }
 
