@@ -345,8 +345,13 @@
               : 0;
           const isPack = item.type === "PACK";
           const piecesPerPack = typeof item.pieces === "number" ? item.pieces : 1;
-          const qtyValidated = typeof item.qty_validated === "number" ? item.qty_validated : 0;
-          const qty = isPack ? qtyValidated * piecesPerPack : qtyValidated;
+          const qtyBase =
+            typeof item.qty_validated === "number"
+              ? item.qty_validated
+              : typeof item.qty_ordered === "number"
+              ? item.qty_ordered
+              : 0;
+          const qty = isPack ? qtyBase * piecesPerPack : qtyBase;
           if (qty <= 0) continue;
           addRow(map, cat, price, qty);
         }
@@ -373,7 +378,14 @@
       rows: sortRows(map),
       orderInfo: {
         orderNo: order.order_no || "",
-        totalVerif: typeof order.validated_vat === "number" ? order.validated_vat : null,
+        totalVerif:
+          typeof order.validated_vat === "number"
+            ? order.validated_vat
+            : typeof order.order_vat === "number"
+            ? order.order_vat
+            : order.summary && typeof order.summary.total_incl_tax === "number"
+            ? order.summary.total_incl_tax
+            : null,
         addresses: pfsAddresses
       }
     };
