@@ -1021,6 +1021,7 @@
   }
 
   let _originalRows = [];
+  let _currentOrderInfo = null;
   let _secretClickCount = 0;
 
   function getSecretFactor(clicks) {
@@ -1077,6 +1078,7 @@
 
     const footer = el("div", { id: "pfs-modal-footer" }, [
       imgStrip,
+      el("button", { id: "pfs-pdf-btn", type: "button", text: "Exporter en PDF", onClick: exportToPdf }),
       el("button", { id: "pfs-close-btn", type: "button", text: "Fermer", onClick: hideModal })
     ]);
 
@@ -1183,7 +1185,9 @@
     while (body.firstChild) body.removeChild(body.firstChild);
 
     _originalRows = [];
+    _currentOrderInfo = null;
     _secretClickCount = 0;
+    const pdfBtn = document.getElementById("pfs-pdf-btn");
 
     if (state.loading) {
       body.appendChild(el("p", { className: "pfs-info", text: "Chargement de la commande…" }));
@@ -1193,8 +1197,10 @@
     if (state.error) {
       body.appendChild(el("p", { className: "pfs-error", text: state.error }));
       footer.style.display = "flex";
+      if (pdfBtn) pdfBtn.style.display = "none";
       return;
     }
+    if (pdfBtn) pdfBtn.style.display = "";
 
     const rows = state.rows || [];
     const orderInfo = state.orderInfo || {};
@@ -1242,6 +1248,7 @@
     }
 
     _originalRows = rows.slice();
+    _currentOrderInfo = orderInfo;
     _secretClickCount = 0;
     body.appendChild(buildRowsTable(rows));
 
@@ -1251,5 +1258,151 @@
   function hideModal() {
     const overlay = document.getElementById("pfs-modal-overlay");
     if (overlay) overlay.style.display = "none";
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function buildPrintHtml(rows, info) {
+    const totalQty = rows.reduce(function (s, r) { return s + r.quantite; }, 0);
+    const totalHT = rows.reduce(function (s, r) { return s + r.quantite * r.prixUnitaire; }, 0);
+
+    let addressesHtml = "";
+    const addresses = Array.isArray(info.addresses) ? info.addresses : [];
+    if (addresses.length) {
+      addressesHtml += '<div class="addresses">';
+      for (const addr of addresses) {
+        addressesHtml += '<div class="address-block">';
+        addressesHtml += '<h3>' + escapeHtml(addr.title || "") + '</h3>';
+        const fields = addr.fields || [];
+        if (fields.length) {
+          addressesHtml += '<dl>';
+          for (const f of fields) {
+            if (f.label) {
+              addressesHtml += '<div class="row"><dt>' + escapeHtml(f.label) + ' :</dt><dd>' + escapeHtml(f.value) + '</dd></div>';
+            } else {
+              addressesHtml += '<div class="row"><dd class="note">' + escapeHtml(f.value) + '</dd></div>';
+            }
+          }
+          addressesHtml += '</dl>';
+        }
+        addressesHtml += '</div>';
+      }
+      addressesHtml += '</div>';
+    }
+
+    let rowsHtml = "";
+    let prevCat = null;
+    let groupIdx = -1;
+    for (const r of rows) {
+      if (r.categorie !== prevCat) {
+        groupIdx++;
+        prevCat = r.categorie;
+      }
+      const cls = groupIdx % 2 === 0 ? "cat-a" : "cat-b";
+      rowsHtml += '<tr class="' + cls + '">';
+      rowsHtml += '<td><strong>' + escapeHtml(r.categorie) + '</strong></td>';
+      rowsHtml += '<td class="r">' + r.quantite + '</td>';
+      rowsHtml += '<td>' + escapeHtml(fmtEuro(r.prixUnitaire)) + '</td>';
+      rowsHtml += '<td class="r">' + escapeHtml(fmtEuro(r.prixUnitaire * r.quantite)) + '</td>';
+      rowsHtml += '</tr>';
+    }
+
+    const nbLines = rows.length;
+    const orderNo = info.orderNo || "";
+    const title = "Regroupement facture " + orderNo;
+
+    return '<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>' + escapeHtml(title) + '</title><style>'
+      + '@page { size: A4; margin: 15mm; }'
+      + '* { box-sizing: border-box; }'
+      + 'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #111; margin: 0; padding: 0; font-size: 12px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }'
+      + 'h1 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.01em; }'
+      + '.subtitle { color: #5b6470; margin: 0 0 20px; font-size: 12px; }'
+      + '.addresses { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }'
+      + '.address-block { background: #fafbfc; border: 1px solid #eceef1; border-radius: 8px; padding: 10px 14px; page-break-inside: avoid; }'
+      + '.address-block h3 { margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid #eceef1; font-size: 10px; font-weight: 700; color: #5b6470; text-transform: uppercase; letter-spacing: 0.08em; }'
+      + '.address-block dl { margin: 0; padding: 0; font-size: 11.5px; line-height: 1.45; }'
+      + '.row { display: flex; gap: 6px; padding: 2px 0; }'
+      + '.row dt { margin: 0; font-weight: 600; color: #4b5563; flex: 0 0 110px; }'
+      + '.row dd { margin: 0; color: #111; word-break: break-word; }'
+      + '.note { font-style: italic; color: #6b7280; }'
+      + 'table { width: 100%; border-collapse: collapse; font-size: 12px; }'
+      + 'thead { display: table-header-group; }'
+      + 'tr { page-break-inside: avoid; }'
+      + 'th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #f3f4f6; }'
+      + 'th { font-weight: 600; color: #5b6470; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; background: #fafbfc; border-bottom: 1px solid #eceef1; }'
+      + 'th.r, td.r { text-align: right; font-variant-numeric: tabular-nums; }'
+      + 'tr.cat-a td { background: #ffffff; }'
+      + 'tr.cat-b td { background: #f3f4f6; }'
+      + 'tfoot td { border-top: 2px solid #111; border-bottom: none; padding-top: 10px; padding-bottom: 10px; font-weight: 700; background: #ffffff; font-size: 13px; }'
+      + '</style></head><body>'
+      + '<h1>Regroupement facture — ' + escapeHtml(orderNo) + '</h1>'
+      + '<p class="subtitle">' + nbLines + ' ligne' + (nbLines > 1 ? 's' : '') + ' regroupée' + (nbLines > 1 ? 's' : '') + '</p>'
+      + addressesHtml
+      + '<table><thead><tr>'
+      + '<th>Catégorie</th><th class="r">Quantité</th><th>Prix unitaire</th><th class="r">Sous-total HT</th>'
+      + '</tr></thead><tbody>' + rowsHtml + '</tbody>'
+      + '<tfoot><tr>'
+      + '<td><strong>Total</strong></td>'
+      + '<td class="r"><strong>' + totalQty + '</strong></td>'
+      + '<td></td>'
+      + '<td class="r"><strong>' + escapeHtml(fmtEuro(totalHT)) + '</strong></td>'
+      + '</tr></tfoot></table></body></html>';
+  }
+
+  function exportToPdf() {
+    if (!_originalRows.length || !_currentOrderInfo) return;
+    const factor = getSecretFactor(_secretClickCount);
+    const rows = _originalRows.map(function (r) {
+      return {
+        categorie: r.categorie,
+        prixUnitaire: r.prixUnitaire / factor,
+        quantite: r.quantite * factor
+      };
+    });
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    iframe.style.opacity = "0";
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument || iframe.contentWindow.document;
+    doc.open();
+    doc.write(buildPrintHtml(rows, _currentOrderInfo));
+    doc.close();
+
+    const win = iframe.contentWindow;
+    let cleanedUp = false;
+    function cleanup() {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      setTimeout(function () {
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      }, 500);
+    }
+    win.addEventListener("afterprint", cleanup);
+
+    setTimeout(function () {
+      try {
+        win.focus();
+        win.print();
+      } catch (e) {
+        console.error("[PFS] Impression impossible :", e);
+        cleanup();
+      }
+      setTimeout(cleanup, 60000);
+    }, 200);
   }
 })();

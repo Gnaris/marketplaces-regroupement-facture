@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.8.1",
+  "version": "3.9.0",
   "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify.",
   "host_permissions": [
     "https://wholesaler.parisfashionshops.com/*",

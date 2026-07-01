@@ -103,6 +103,22 @@
   background: #2a2a2a;
 }
 
+#pfs-pdf-btn {
+  background: #fff;
+  color: #111;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 12px 20px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+#pfs-pdf-btn:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
 #pfs-img-strip {
   display: flex;
   align-items: center;
