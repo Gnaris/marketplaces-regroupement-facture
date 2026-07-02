@@ -308,10 +308,28 @@
     fields.push({ label: label || null, value: v });
   }
 
+  const CATEGORY_FAMILIES = [
+    { name: "Robe", pattern: /\brobes?\b/i },
+    { name: "T-shirt", pattern: /\b(?:t[\s-]?shirts?|tee[\s-]?shirts?)\b/i },
+    { name: "Débardeur", pattern: /\bd[ée]bardeurs?\b/i },
+    { name: "Pantalon", pattern: /\bpantalons?\b/i },
+    { name: "Short", pattern: /\bshorts?\b/i },
+    { name: "Top", pattern: /\btops?\b/i }
+  ];
+
+  function normalizeCategory(raw) {
+    if (!raw) return "Sans catégorie";
+    for (const fam of CATEGORY_FAMILIES) {
+      if (fam.pattern.test(raw)) return fam.name;
+    }
+    return raw;
+  }
+
   function addRow(map, cat, price, qty) {
-    const key = cat + "||" + price.toFixed(4);
+    const normalized = normalizeCategory(cat);
+    const key = normalized + "||" + price.toFixed(4);
     if (!map.has(key)) {
-      map.set(key, { categorie: cat, prixUnitaire: price, quantite: 0 });
+      map.set(key, { categorie: normalized, prixUnitaire: price, quantite: 0 });
     }
     map.get(key).quantite += qty;
   }
