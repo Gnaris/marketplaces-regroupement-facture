@@ -249,6 +249,29 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return true;
   }
 
+  if (site === "bj") {
+    if (!orderId) {
+      sendResponse({ ok: false, error: "ID commande manquant." });
+      return;
+    }
+    const apiBase = message.apiBase || "https://beliandjolie.com";
+    const url =
+      apiBase +
+      "/api/admin/commandes/" +
+      encodeURIComponent(orderId) +
+      "/regroup";
+    fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json, */*"
+      },
+      credentials: "include"
+    })
+      .then(handleResponse(sendResponse))
+      .catch(handleError(sendResponse));
+    return true;
+  }
+
   sendResponse({ ok: false, error: "Site inconnu : " + site });
 });
 

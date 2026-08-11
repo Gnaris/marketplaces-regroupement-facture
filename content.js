@@ -5,6 +5,8 @@
   const HOST_MC = "web.mc.app";
   const HOST_OC = "www.orderchamp.com";
   const HOST_SHOPIFY = "admin.shopify.com";
+  const HOST_BJ = "beliandjolie.com";
+  const HOST_BM = "www.bijouxmysteres.fr";
   const host = location.hostname;
   let site = null;
   if (host === HOST_PFS) site = "pfs";
@@ -14,6 +16,8 @@
   else if (host === HOST_MC || host.endsWith(".dokkr.net")) site = "mc";
   else if (host === HOST_OC) site = "oc";
   else if (host === HOST_SHOPIFY) site = "shopify";
+  else if (host === HOST_BJ || host === "www." + HOST_BJ || host === "localhost") site = "bj";
+  else if (host === HOST_BM) site = "bm";
   if (!site) return;
 
   const isTopFrame = window.top === window.self;
@@ -84,6 +88,24 @@
     });
   }
 
+  const bmPendingFetches = new Map();
+  if (site === "bm") {
+    const s = document.createElement("script");
+    s.src = chrome.runtime.getURL("injected-bm.js");
+    s.onload = function () { s.remove(); };
+    (document.head || document.documentElement).appendChild(s);
+
+    window.addEventListener("message", function (event) {
+      if (event.source !== window) return;
+      const d = event.data;
+      if (!d || d.source !== "bm-regroup" || d.type !== "FETCH_ORDER_RESULT") return;
+      const pending = bmPendingFetches.get(d.requestId);
+      if (!pending) return;
+      bmPendingFetches.delete(d.requestId);
+      pending(d);
+    });
+  }
+
   function getOrderId() {
     if (site === "pfs") {
       const m = location.pathname.match(/\/orders\/([^\/]+)\/details/);
@@ -110,6 +132,10 @@
       const m = location.pathname.match(/^\/store\/[^\/]+\/orders\/(\d+)/);
       return m ? m[1] : null;
     }
+    if (site === "bj" || site === "bm") {
+      const m = location.pathname.match(/^\/admin\/commandes\/([^\/\?]+)/);
+      return m ? m[1] : null;
+    }
     return null;
   }
 
@@ -134,6 +160,7 @@
     if (site === "mc") return host === HOST_MC;
     if (site === "oc") return /^\/[a-z]{2}\/backoffice\/orders\/\d+\/?$/.test(location.pathname);
     if (site === "shopify") return /^\/store\/[^\/]+\/orders\/\d+\/?$/.test(location.pathname);
+    if (site === "bj" || site === "bm") return /^\/admin\/commandes\/[^\/\?]+\/?$/.test(location.pathname);
     return false;
   }
 
@@ -211,30 +238,35 @@
 
     showModal({ loading: true });
     try {
-      const result = await new Promise(function (resolve) {
-        try {
-          chrome.runtime.sendMessage(
-            {
-              type: "FETCH_ORDER",
-              site: site,
-              orderId: orderId,
-              token: cachedToken,
-              apiBase: site === "aks" ? location.origin : undefined,
-              storeName: shopifyStoreName,
-              csrfToken: shopifyCsrfToken
-            },
-            function (response) {
-              if (chrome.runtime.lastError) {
-                resolve({ ok: false, error: chrome.runtime.lastError.message });
-              } else {
-                resolve(response || { ok: false, error: "Pas de réponse du service worker." });
+      let result;
+      if (site === "bm") {
+        result = await fetchBmFromPage(orderId);
+      } else {
+        result = await new Promise(function (resolve) {
+          try {
+            chrome.runtime.sendMessage(
+              {
+                type: "FETCH_ORDER",
+                site: site,
+                orderId: orderId,
+                token: cachedToken,
+                apiBase: site === "aks" || site === "bj" ? location.origin : undefined,
+                storeName: shopifyStoreName,
+                csrfToken: shopifyCsrfToken
+              },
+              function (response) {
+                if (chrome.runtime.lastError) {
+                  resolve({ ok: false, error: chrome.runtime.lastError.message });
+                } else {
+                  resolve(response || { ok: false, error: "Pas de réponse du service worker." });
+                }
               }
-            }
-          );
-        } catch (e) {
-          resolve({ ok: false, error: CONTEXT_LOST_MSG });
-        }
-      });
+            );
+          } catch (e) {
+            resolve({ ok: false, error: CONTEXT_LOST_MSG });
+          }
+        });
+      }
       if (!result.ok) {
         throw new Error(result.error || "Erreur inconnue");
       }
@@ -243,6 +275,8 @@
       else if (site === "efp") parsed = parseEfp(result.data);
       else if (site === "aks") parsed = parseAks(result.data, orderId);
       else if (site === "shopify") parsed = parseShopify(result.data);
+      else if (site === "bj") parsed = parseBj(result.data);
+      else if (site === "bm") parsed = parseBm(result.data);
       else parsed = parseFaire(result.data, cachedFaireCustomer);
       showModal({ rows: parsed.rows, orderInfo: parsed.orderInfo });
     } catch (e) {
@@ -299,6 +333,35 @@
     } catch (e) {
       showModal({ error: e && e.message ? e.message : String(e) });
     }
+  }
+
+  function fetchBmFromPage(orderId) {
+    return new Promise(function (resolve) {
+      const requestId = "bm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 10);
+      const timer = setTimeout(function () {
+        if (bmPendingFetches.has(requestId)) {
+          bmPendingFetches.delete(requestId);
+          resolve({
+            ok: false,
+            error:
+              "Le script de la page n'a pas répondu. Rechargez la page (F5) puis recliquez."
+          });
+        }
+      }, 15000);
+      bmPendingFetches.set(requestId, function (result) {
+        clearTimeout(timer);
+        resolve(result);
+      });
+      window.postMessage(
+        {
+          source: "bm-regroup",
+          type: "FETCH_ORDER",
+          orderId: orderId,
+          requestId: requestId
+        },
+        "*"
+      );
+    });
   }
 
   function pushField(fields, label, value) {
@@ -464,6 +527,7 @@
     }
     if (/cha[îi]nes?\s+de\s+chevilles?/.test(lower)) return "Chaîne de cheville";
     if (/cha[îi]nes?\s+de\s+tailles?/.test(lower)) return "Chaîne de taille";
+    if (/(?:cha[îi]nes?|bracelets?)\s+de\s+mains?/.test(lower)) return "Chaîne de main";
     if (/bracelet/.test(lower)) {
       if (/jonc/.test(lower)) return "Bracelet jonc";
       if (/charm/.test(lower)) return "Bracelet rigide à charms";
@@ -471,7 +535,6 @@
     }
     if (/bague/.test(lower)) {
       if (/d['’]?\s*orteil/.test(lower)) return "Bague d'orteil";
-      if (/ajustable/.test(lower)) return "Bague ajustable";
       return "Bague";
     }
     if (/porte[\s-]?cl[ée]/.test(lower)) return "Porte clé";
@@ -492,7 +555,7 @@
     if (/\btops?\b/.test(lower)) return "Tops";
     if (/\bblazers?\b/.test(lower)) return "Blazers";
     if (/\bvestes?\b/.test(lower)) return "Vestes";
-    if (/collier/.test(lower)) return "Collier";
+    if (/colliers?|sautoirs?/.test(lower)) return "Collier";
     const idx = name.indexOf(" - ");
     if (idx > 0) return name.slice(0, idx).trim();
     return name;
@@ -609,6 +672,17 @@
     };
   }
 
+  function normalizeFaireCategory(cat) {
+    if (!cat) return cat;
+    const lower = cat.toLowerCase();
+    if (/boucles?\s*d['’]?\s*oreilles?|cr[ée]oles?|clous?\s*d['’]?\s*oreilles?/.test(lower)) return "Boucles d'oreilles";
+    if (/bracelets?/.test(lower)) return "Bracelet";
+    if (/parures?/.test(lower)) return "Parure de bijoux";
+    if (/colliers?|sautoirs?/.test(lower)) return "Collier";
+    if (/bagues?|anneaux?|solitaires?/.test(lower)) return "Bague";
+    return cat;
+  }
+
   function parseFaire(json, customerData) {
     if (!json || !Array.isArray(json.items)) throw new Error("Réponse API invalide.");
     const products = json.products && typeof json.products === "object" ? json.products : {};
@@ -635,7 +709,8 @@
         prod && prod.taxonomy_type && prod.taxonomy_type.group_name
           ? String(prod.taxonomy_type.group_name).trim()
           : "";
-      const cat = groupName || detectCategory(item.product_name);
+      const rawCat = groupName || detectCategory(item.product_name);
+      const cat = normalizeFaireCategory(rawCat);
       addRow(map, cat, price, qty);
     }
     const token =
@@ -755,6 +830,126 @@
       orderInfo: {
         orderNo: order.name || "",
         totalVerif: isFinite(subtotal) ? subtotal : null,
+        addresses: addresses
+      }
+    };
+  }
+
+  function parseBj(json) {
+    if (!json || !Array.isArray(json.items)) throw new Error("Réponse API invalide.");
+    const map = new Map();
+    for (const it of json.items) {
+      const qty = typeof it.quantite === "number" ? it.quantite : parseInt(it.quantite, 10);
+      const price = typeof it.prixUnitaire === "number" ? it.prixUnitaire : parseFloat(it.prixUnitaire);
+      if (!qty || qty <= 0 || !isFinite(price)) continue;
+      addRow(map, it.categorie || "Sans catégorie", price, qty);
+    }
+
+    function bjAddrToFields(addr, kind) {
+      if (!addr || typeof addr !== "object") return null;
+      const fields = [];
+      pushField(fields, "Nom de société", addr.company);
+      const fullName = [addr.firstName, addr.lastName]
+        .filter(function (x) { return x && String(x).trim(); })
+        .join(" ");
+      if (fullName && fullName !== addr.company) pushField(fields, "Nom du contact", fullName);
+      pushField(fields, "Adresse", addr.address1);
+      if (addr.address2) pushField(fields, "Complément", addr.address2);
+      pushField(fields, "Code postal", addr.zipCode);
+      pushField(fields, "Ville", addr.city);
+      pushField(fields, "Pays", addr.country);
+      pushField(fields, "Téléphone", addr.phone);
+      pushField(fields, "Email", addr.email);
+      if (kind === "billing") pushField(fields, "SIRET", addr.siret);
+      pushField(fields, "N° TVA", addr.vatNumber);
+      return fields.length ? fields : null;
+    }
+
+    const addresses = [];
+    const shipFields = bjAddrToFields(json.shipping, "shipping");
+    if (shipFields) addresses.push({ title: "Adresse de livraison", fields: shipFields });
+    const billFields = bjAddrToFields(json.billing, "billing");
+    if (billFields) addresses.push({ title: "Adresse de facturation", fields: billFields });
+
+    const totalVerif =
+      typeof json.subtotalHT === "number" && isFinite(json.subtotalHT)
+        ? json.subtotalHT
+        : null;
+
+    return {
+      rows: sortRows(map),
+      orderInfo: {
+        orderNo: json.orderNo || "",
+        totalVerif: totalVerif,
+        addresses: addresses
+      }
+    };
+  }
+
+  function parseBm(json) {
+    if (!json || !json.data) throw new Error("Réponse API invalide.");
+    const order = json.data;
+    const items = Array.isArray(order.items) ? order.items : [];
+    const map = new Map();
+    for (const it of items) {
+      const qty = typeof it.quantity === "number" ? it.quantity : parseInt(it.quantity, 10);
+      const price = typeof it.unitPrice === "number" ? it.unitPrice : parseFloat(it.unitPrice);
+      if (!qty || qty <= 0 || !isFinite(price)) continue;
+      const cat = it.categoryName || detectCategory(it.name) || "Sans catégorie";
+      addRow(map, cat, price, qty);
+    }
+
+    const customer = order.customer || {};
+    function bmAddrToFields(addr) {
+      if (!addr || typeof addr !== "object") return null;
+      const fields = [];
+      const company = customer.companyName || addr.label;
+      pushField(fields, "Nom de société", company);
+      const contactName = customer.contactName || "";
+      if (contactName && contactName !== company) {
+        pushField(fields, "Nom du contact", contactName);
+      }
+      pushField(fields, "Adresse", addr.street);
+      pushField(fields, "Code postal", addr.zip);
+      pushField(fields, "Ville", addr.city);
+      pushField(fields, "Pays", addr.country);
+      pushField(fields, "Téléphone", addr.phone || customer.phone);
+      pushField(fields, "Email", customer.email);
+      pushField(fields, "SIRET", customer.siret);
+      pushField(fields, "N° TVA", customer.vatNumber);
+      return fields.length ? fields : null;
+    }
+
+    const addresses = [];
+    const shipFields = bmAddrToFields(order.shippingAddress);
+    if (shipFields) addresses.push({ title: "Adresse de livraison", fields: shipFields });
+
+    const ship = order.shippingAddress || {};
+    const bill = order.billingAddress || {};
+    const sameAddress =
+      shipFields &&
+      ship.street === bill.street &&
+      ship.zip === bill.zip &&
+      ship.city === bill.city &&
+      ship.country === bill.country;
+    if (sameAddress) {
+      addresses.push({
+        title: "Adresse de facturation",
+        fields: [{ label: null, value: "Identique à l'adresse de livraison" }]
+      });
+    } else {
+      const billFields = bmAddrToFields(order.billingAddress);
+      if (billFields) addresses.push({ title: "Adresse de facturation", fields: billFields });
+    }
+
+    const totalVerif =
+      typeof order.totalHT === "number" && isFinite(order.totalHT) ? order.totalHT : null;
+
+    return {
+      rows: sortRows(map),
+      orderInfo: {
+        orderNo: order.orderNumber || "",
+        totalVerif: totalVerif,
         addresses: addresses
       }
     };

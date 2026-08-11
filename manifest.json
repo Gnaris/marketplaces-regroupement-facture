@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.10.0",
-  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify.",
+  "version": "3.13.0",
+  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères.",
   "host_permissions": [
     "https://wholesaler.parisfashionshops.com/*",
     "https://wholesaler-api.parisfashionshops.com/*",
@@ -13,7 +13,12 @@
     "https://web.mc.app/*",
     "https://*.dokkr.net/*",
     "https://www.orderchamp.com/*",
-    "https://admin.shopify.com/*"
+    "https://admin.shopify.com/*",
+    "https://beliandjolie.com/*",
+    "https://www.beliandjolie.com/*",
+    "https://www.bijouxmysteres.fr/*",
+    "https://server.bijouxmysteres.fr/*",
+    "http://localhost:3000/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -26,7 +31,11 @@
         "https://*.ankorstore.com/account/orders/*",
         "https://www.faire.com/brand-portal/orders/*",
         "https://www.orderchamp.com/*/backoffice/orders/*",
-        "https://admin.shopify.com/store/*/orders/*"
+        "https://admin.shopify.com/store/*/orders/*",
+        "https://beliandjolie.com/admin/commandes/*",
+        "https://www.beliandjolie.com/admin/commandes/*",
+        "https://www.bijouxmysteres.fr/admin/commandes/*",
+        "http://localhost:3000/admin/commandes/*"
       ],
       "js": ["content.js"],
       "css": ["modal.css"],
@@ -61,6 +70,10 @@
       "matches": ["https://admin.shopify.com/*"]
     },
     {
+      "resources": ["injected-bm.js"],
+      "matches": ["https://www.bijouxmysteres.fr/*"]
+    },
+    {
       "resources": ["z.png", "img1.png", "img2.png", "img3.png", "img4.png", "img5.png", "img6.png"],
       "matches": [
         "https://wholesaler.parisfashionshops.com/*",
@@ -70,7 +83,11 @@
         "https://web.mc.app/*",
         "https://*.dokkr.net/*",
         "https://www.orderchamp.com/*",
-        "https://admin.shopify.com/*"
+        "https://admin.shopify.com/*",
+        "https://beliandjolie.com/*",
+        "https://www.beliandjolie.com/*",
+        "https://www.bijouxmysteres.fr/*",
+        "http://localhost:3000/*"
       ]
     }
   ]
