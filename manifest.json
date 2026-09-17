@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.13.0",
+  "version": "3.17.2",
+  "permissions": ["storage"],
   "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères.",
   "host_permissions": [
     "https://wholesaler.parisfashionshops.com/*",

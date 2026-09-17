@@ -2,10 +2,21 @@
   if (window.__faireRegroupInjected) return;
   window.__faireRegroupInjected = true;
 
-  const RX = /\/api\/v3\/crm\/([^/]+)\/customer_details\?[^"]*retailer_token=([^&"]+)/;
+  // Endpoint réel (vérifié live 31/08/2026) :
+  //   /api/crm/brands/customer-details?retailer_token={retailerToken}
+  // Payload : { brand_customer_view, default_shipping_address, retailer_details, … }
+  // Ancien pattern (/api/v3/crm/{brand}/customer_details) gardé en repli si Faire
+  // réactive la route historique.
+  const RX_CUSTOMER_DETAILS_NEW =
+    /\/api\/crm\/brands\/customer-details\?[^"]*retailer_token=([^&"]+)/;
+  const RX_CUSTOMER_DETAILS_OLD =
+    /\/api\/v3\/crm\/([^/]+)\/customer_details\?[^"]*retailer_token=([^&"]+)/;
 
-  function send(data, brandToken, retailerToken) {
+  function send(data, brandToken, retailerToken, url) {
     if (!data) return;
+    try {
+      console.log("[injected-faire] payload capté depuis :", url, data);
+    } catch (e) { /* noop */ }
     window.postMessage({
       source: "faire-regroup",
       type: "FAIRE_CUSTOMER",
@@ -17,9 +28,11 @@
 
   function parseTokens(url) {
     if (typeof url !== "string") return null;
-    const m = url.match(RX);
-    if (!m) return null;
-    return { brandToken: m[1], retailerToken: m[2] };
+    let m = url.match(RX_CUSTOMER_DETAILS_NEW);
+    if (m) return { brandToken: null, retailerToken: m[1] };
+    m = url.match(RX_CUSTOMER_DETAILS_OLD);
+    if (m) return { brandToken: m[1], retailerToken: m[2] };
+    return null;
   }
 
   const originalFetch = window.fetch;
@@ -33,7 +46,7 @@
           return resp.clone().json();
         })
         .then(function (data) {
-          send(data, tokens.brandToken, tokens.retailerToken);
+          send(data, tokens.brandToken, tokens.retailerToken, url);
         })
         .catch(function () {});
     }
@@ -47,7 +60,7 @@
       const xhr = this;
       this.addEventListener("load", function () {
         try {
-          send(JSON.parse(xhr.responseText), tokens.brandToken, tokens.retailerToken);
+          send(JSON.parse(xhr.responseText), tokens.brandToken, tokens.retailerToken, url);
         } catch (e) {}
       });
     }

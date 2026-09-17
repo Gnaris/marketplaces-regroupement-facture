@@ -388,13 +388,73 @@
     return raw;
   }
 
-  function addRow(map, cat, price, qty) {
+  function addRow(map, cat, price, qty, meta) {
     const normalized = normalizeCategory(cat);
     const key = normalized + "||" + price.toFixed(4);
     if (!map.has(key)) {
-      map.set(key, { categorie: normalized, prixUnitaire: price, quantite: 0 });
+      map.set(key, { categorie: normalized, prixUnitaire: price, quantite: 0, items: [] });
     }
-    map.get(key).quantite += qty;
+    const row = map.get(key);
+    row.quantite += qty;
+    row.items.push({
+      quantite: qty,
+      ref: meta && meta.ref ? String(meta.ref).trim() : null,
+      name: meta && meta.name ? String(meta.name).trim() : null,
+      image: meta && meta.image ? String(meta.image) : null,
+      color: meta && meta.color ? String(meta.color).trim() : null
+    });
+  }
+
+  // Couleur depuis un SKU marketplace de la forme {REF}_{COULEUR}[_{TAILLE}]
+  // (Ankorstore : "A1720_VERT_DEAU" → "VERT DEAU"). Pour Faire, le SKU se
+  // termine par _{UNIT|PACK}_{idSuffix} : on coupe à partir de UNIT/PACK.
+  function colorFromSku(sku, isFaire) {
+    if (!sku) return null;
+    let parts = String(sku).split("_").filter(Boolean);
+    if (parts.length < 2) return null;
+    parts = parts.slice(1);
+    if (isFaire) {
+      const upIdx = parts.findIndex(function (p) { return /^(UNIT|PACK)$/i.test(p); });
+      if (upIdx >= 0) parts = parts.slice(0, upIdx);
+      else if (parts.length > 1) parts = parts.slice(0, parts.length - 1);
+    }
+    const joined = parts.join(" ").trim();
+    return joined || null;
+  }
+
+  // Premier argument non vide (pour extraire réf / nom sans connaître le
+  // nom exact du champ selon la marketplace).
+  function firstNonEmpty() {
+    for (let i = 0; i < arguments.length; i++) {
+      const v = arguments[i];
+      if (v == null) continue;
+      const s = String(v).trim();
+      if (s) return s;
+    }
+    return null;
+  }
+
+  // Première URL d'image exploitable parmi des candidats de formes variées
+  // (string, tableau, objet {url|src|path|original|thumbnail}).
+  function firstImageUrl() {
+    for (let i = 0; i < arguments.length; i++) {
+      const v = arguments[i];
+      if (!v) continue;
+      if (typeof v === "string") {
+        if (/^https?:\/\//i.test(v)) return v;
+        continue;
+      }
+      if (Array.isArray(v)) {
+        const found = firstImageUrl(v[0]);
+        if (found) return found;
+        continue;
+      }
+      if (typeof v === "object") {
+        const found = firstImageUrl(v.url, v.src, v.path, v.original, v.thumbnail, v.image);
+        if (found) return found;
+      }
+    }
+    return null;
   }
 
   function sortRows(map) {
@@ -418,6 +478,10 @@
         const cat =
           (product.category && product.category.labels && product.category.labels.fr) ||
           "Sans catégorie";
+        // Vérifié sur capture réelle : product.reference = référence Beli & Jolie
+        // (ex "PRT-OREILLE170"), item.sku = "{REF}_{COULEUR}_{TAILLE}",
+        // item.image = URL, item.name = nom produit.
+        const prodRef = firstNonEmpty(product.reference);
         const items = Array.isArray(product.items) ? product.items : [];
         for (const item of items) {
           const price =
@@ -434,7 +498,18 @@
               : 0;
           const qty = isPack ? qtyBase * piecesPerPack : qtyBase;
           if (qty <= 0) continue;
-          addRow(map, cat, price, qty);
+          const pfsColorObj = item.color;
+          addRow(map, cat, price, qty, {
+            ref: prodRef || (item.sku ? String(item.sku).split("_")[0] : null),
+            name: firstNonEmpty(item.name, prodRef),
+            image: firstImageUrl(item.image),
+            color: firstNonEmpty(
+              pfsColorObj && typeof pfsColorObj === "object"
+                ? (pfsColorObj.labels && pfsColorObj.labels.fr) || pfsColorObj.label || pfsColorObj.name
+                : pfsColorObj,
+              item.sku_without_ref ? String(item.sku_without_ref).split("_")[0] : null
+            )
+          });
         }
       }
     }
@@ -488,7 +563,14 @@
       const qty = typeof ligne.quantite_total === "number" ? ligne.quantite_total : 0;
       if (qty <= 0) continue;
       const price = ligne.prixLigne / qty;
-      addRow(map, cat, price, qty);
+      // Vérifié sur capture réelle : reference_base = référence Beli & Jolie
+      // (ex "A1006"), reference = "A1006-ARGENT", imageUrl = URL miniature.
+      addRow(map, cat, price, qty, {
+        ref: firstNonEmpty(ligne.reference_base, ligne.reference),
+        name: firstNonEmpty([ligne.reference, ligne.couleur_FR].filter(Boolean).join(" — ")),
+        image: firstImageUrl(ligne.imageUrl),
+        color: firstNonEmpty(ligne.couleur_FR)
+      });
     }
     const efpAddresses = [];
     const a = order.acheteur || {};
@@ -589,8 +671,23 @@
       const prod = prodId ? productsById.get(prodId) : null;
       const name = prod && prod.name ? prod.name : "";
       const cat = detectCategory(name);
-      addRow(map, cat, price, qty);
+      const aksSku = prod ? firstNonEmpty(prod.sku, prod.reference, prod.variantSku, a.sku) : firstNonEmpty(a.sku);
+      addRow(map, cat, price, qty, {
+        ref: aksSku,
+        name: name || null,
+        image: prod ? firstImageUrl(prod.images, prod.image, prod.imageUrl, prod.picture) : null,
+        color: colorFromSku(aksSku, false)
+      });
     }
+
+    // Diagnostic : si le produit ne porte aucune référence reconnue, afficher
+    // sa structure en console pour identifier le bon champ.
+    try {
+      const sample = productsById.values().next().value;
+      if (sample && !firstNonEmpty(sample.sku, sample.reference, sample.variantSku)) {
+        console.log("[Regroupement][AKS] Référence introuvable — attributs du 1er produit :", sample);
+      }
+    } catch (e) { /* noop */ }
 
     const aksAddresses = [];
     let orderNo = "";
@@ -641,7 +738,14 @@
       if (qty <= 0) continue;
       const price = parseFloat(item.price) || 0;
       const cat = detectCategory(item.name);
-      addRow(map, cat, price, qty);
+      // Vérifié sur capture réelle : item_ref = référence Beli & Jolie
+      // (ex "A2678"), img = URL, imgs = tableau d'URLs, name = nom produit.
+      addRow(map, cat, price, qty, {
+        ref: firstNonEmpty(item.item_ref, item.item_ref_search_code),
+        name: item.name || null,
+        image: firstImageUrl(item.img, item.imgs, item.image, item.pic),
+        color: firstNonEmpty(item.pure_color_name, item.color_name)
+      });
     }
     const totalVerif = parseFloat(doc.total_price);
 
@@ -683,10 +787,48 @@
     return cat;
   }
 
+  // Retrouve la UGS Faire complète : "{ref}_{couleur}[_{taille}]_{UNIT|PACK}_{idSuffix}".
+  // Vérifié en live sur la capture d'une commande Faire : la UGS est exposée sur
+  // `item.brand_code` (et dupliquée dans `item.brand_codes[0]` +
+  // `item.product_option_brand_code`), jamais sur `item.sku` (qui n'existe pas).
+  // Fallbacks défensifs pour d'éventuelles anciennes réponses.
+  function findFaireSku(item, prod) {
+    let s = firstNonEmpty(
+      item.brand_code,
+      Array.isArray(item.brand_codes) ? item.brand_codes[0] : null,
+      item.product_option_brand_code,
+      item.sku, item.brand_sku, item.maker_sku, item.variant_sku
+    );
+    if (s) return s;
+    if (prod && item.product_option_token) {
+      const optArrays = [
+        Array.isArray(prod.options) ? prod.options : null,
+        Array.isArray(prod.variants) ? prod.variants : null,
+        Array.isArray(prod.product_options) ? prod.product_options : null
+      ];
+      for (const opts of optArrays) {
+        if (!opts) continue;
+        for (const opt of opts) {
+          if (!opt) continue;
+          if (opt.token === item.product_option_token || opt.id === item.product_option_token) {
+            s = firstNonEmpty(opt.brand_code, opt.sku, opt.brand_sku);
+            if (s) return s;
+          }
+        }
+      }
+    }
+    if (prod) {
+      s = firstNonEmpty(prod.brand_code, prod.sku, prod.brand_sku);
+      if (s) return s;
+    }
+    return null;
+  }
+
   function parseFaire(json, customerData) {
     if (!json || !Array.isArray(json.items)) throw new Error("Réponse API invalide.");
     const products = json.products && typeof json.products === "object" ? json.products : {};
     const map = new Map();
+    let faireFirstItemLogged = false;
     for (const item of json.items) {
       if (item.is_sample === true) continue;
       if (item.includes_tester === true) continue;
@@ -711,7 +853,31 @@
           : "";
       const rawCat = groupName || detectCategory(item.product_name);
       const cat = normalizeFaireCategory(rawCat);
-      addRow(map, cat, price, qty);
+      const faireSku = findFaireSku(item, prod);
+      if (!faireFirstItemLogged) {
+        faireFirstItemLogged = true;
+        try {
+          console.log(
+            "[Regroupement][Faire] 1er item — UGS résolue :", faireSku,
+            "\n  item :", item,
+            "\n  produit lié :", prod
+          );
+        } catch (e) { /* noop */ }
+      }
+      // UGS Faire = "{ref}_{couleur}[_{taille}]_{UNIT|PACK}_{idSuffix}" ; on
+      // garde la référence nue (avant le premier « _ »), en majuscules, pour
+      // matcher celle de la boutique BJ ("A2425") — sinon le lookup échoue
+      // et la Description RTF affiche la UGS brute.
+      const faireRef = faireSku ? String(faireSku).split("_")[0].toUpperCase() : null;
+      // Couleur : `item.style_name` est déjà formaté (« Doré ») ; on ne
+      // retombe sur le parsing de la UGS que si le champ est absent.
+      const faireColor = firstNonEmpty(item.style_name, colorFromSku(faireSku, true));
+      addRow(map, cat, price, qty, {
+        ref: faireRef,
+        name: item.product_name || null,
+        image: firstImageUrl(item.image, prod && prod.images, prod && prod.image_url, item.image_url),
+        color: faireColor
+      });
     }
     const token =
       json.brand_order && json.brand_order.token ? json.brand_order.token : "";
@@ -737,7 +903,71 @@
       pushField(fields, "Email", addr.email);
       return fields.length ? fields : null;
     }
+    // Bloc facturation Faire : la réponse `customer-details` (vérifiée live)
+    // ne contient PAS de `retailer_details.address` séparée — l'adresse
+    // légale du détaillant est en pratique la même que `default_shipping_address`.
+    // On construit donc le bloc à partir de l'adresse d'expédition, complété
+    // par les infos entreprise disponibles au niveau `retailer_details` /
+    // `brand_customer_view` (nom société, contact, téléphone). SIRET / TVA /
+    // EORI ne sont PAS exposés par cet endpoint — champs candidats laissés
+    // à titre défensif au cas où l'API les ajouterait plus tard.
+    function faireBillingFields(rd, bcv, shipping, storeName, contactName) {
+      if (!rd && !bcv) return null;
+      const rdAddr = (rd && rd.address) || {};
+      const shipAddr = shipping || {};
+      const pick = function () {
+        for (let i = 0; i < arguments.length; i++) {
+          const v = arguments[i];
+          if (v == null) continue;
+          const s = String(v).trim();
+          if (s) return s;
+        }
+        return null;
+      };
+      const fields = [];
+      const legalName = pick(
+        rd && rd.business_name, rd && rd.legal_business_name,
+        rd && rd.legal_entity_name, rd && rd.company_name, rd && rd.name,
+        bcv && bcv.legal_business_name, bcv && bcv.business_name, storeName
+      );
+      pushField(fields, "Nom de société", legalName);
+      const displayName = pick(rdAddr.name, shipAddr.name, contactName, rd && rd.contact_name);
+      if (displayName && displayName !== legalName) {
+        pushField(fields, "Nom du contact", displayName);
+      }
+      pushField(fields, "Adresse", pick(rdAddr.address1, shipAddr.address1));
+      const complement = pick(rdAddr.address2, shipAddr.address2);
+      if (complement) pushField(fields, "Complément", complement);
+      pushField(fields, "Code postal", pick(rdAddr.postal_code, shipAddr.postal_code));
+      pushField(fields, "Ville", pick(rdAddr.city, shipAddr.city, rd && rd.city));
+      pushField(fields, "Pays", pick(
+        rdAddr.country, rdAddr.iso3_country_code, rdAddr.country_code,
+        shipAddr.country, shipAddr.iso3_country_code, shipAddr.country_code
+      ));
+      pushField(fields, "Téléphone", pick(
+        rd && rd.phone_number, rd && rd.phone,
+        rdAddr.phone_number, rdAddr.phone,
+        shipAddr.phone_number, shipAddr.phone,
+        bcv && bcv.phone_number, bcv && bcv.phone
+      ));
+      pushField(fields, "Email", pick(
+        rd && rd.email, rd && rd.contact_email, rdAddr.email,
+        shipAddr.email, bcv && bcv.email
+      ));
+      pushField(fields, "SIRET", pick(
+        rd && rd.siret, rd && rd.siret_number, rd && rd.registration_number,
+        rd && rd.business_registration_number, rd && rd.company_registration_number
+      ));
+      pushField(fields, "N° TVA", pick(
+        rd && rd.vat_number, rd && rd.eu_vat_number, rd && rd.tax_registration_number,
+        rd && rd.tax_id_number, rd && rd.tax_number, rd && rd.tax_id
+      ));
+      return fields.length ? fields : null;
+    }
     if (customerData) {
+      try {
+        console.log("[Regroupement][Faire] customerData interceptée :", customerData);
+      } catch (e) { /* noop */ }
       const bcv = customerData.brand_customer_view || {};
       const storeName = bcv.store_name || "";
       const contactName = bcv.contact_name || "";
@@ -745,8 +975,7 @@
       const shipFields = faireAddrToFields(shipping, storeName, contactName);
       if (shipFields) faireAddresses.push({ title: "Adresse de livraison", fields: shipFields });
       const rd = customerData.retailer_details || {};
-      const billing = rd.address;
-      const billFields = faireAddrToFields(billing, storeName, contactName);
+      const billFields = faireBillingFields(rd, bcv, shipping, storeName, contactName);
       if (billFields) faireAddresses.push({ title: "Adresse de facturation", fields: billFields });
     } else {
       console.log("[Faire] Aucune donnée customer interceptée. Rechargez la page de la commande pour que la requête soit captée.");
@@ -787,7 +1016,12 @@
           : null;
       const price = money ? parseFloat(money.amount) || 0 : 0;
       const cat = detectCategory(node.title);
-      addRow(map, cat, price, qty);
+      addRow(map, cat, price, qty, {
+        ref: firstNonEmpty(node.sku),
+        name: node.title || null,
+        image: firstImageUrl(node.image),
+        color: firstNonEmpty(node.variantTitle)
+      });
     }
 
     function shopifyAddrToFields(addr) {
@@ -835,14 +1069,95 @@
     };
   }
 
+  // L'API /regroup ne dit pas si une ligne est un PACK. Mais la page admin
+  // affiche la composition dans la colonne « Taille » : « Pack × N », ou
+  // « TU × N », ou « S × 2 · M × 3 · L × 1 » (multi-tailles, sommées). On
+  // scanne les <tr>, on additionne les nombres après chaque « × » de la
+  // cellule taille (en excluant la cellule qtyTotal qui contient « 12 (3×4) »),
+  // et on matche par (qty, prix) avec les items de l'API.
+  function extractBjPackQtyFromCell(text) {
+    if (!text) return 0;
+    // Cellule prix ou totaux HT/TTC → contient €.
+    if (text.indexOf("€") !== -1) return 0;
+    // Cellule qtyTotal → un chiffre est collé avant le « × » (ex : « (3×4) »).
+    if (/\d\s*×/.test(text)) return 0;
+    const matches = text.match(/×\s*(\d+)/g);
+    if (!matches) return 0;
+    let total = 0;
+    for (const chunk of matches) {
+      const n = chunk.match(/(\d+)/);
+      if (n) total += parseInt(n[1], 10);
+    }
+    return total;
+  }
+
+  function readBjPackInfoFromDom() {
+    const infos = [];
+    const tds = document.querySelectorAll("td");
+    for (const td of tds) {
+      const packQty = extractBjPackQtyFromCell(td.textContent || "");
+      if (packQty < 2) continue;
+      const row = td.closest("tr");
+      if (!row) continue;
+      const rowTds = Array.from(row.children).filter(function (el) {
+        return el.tagName === "TD";
+      });
+      const idx = rowTds.indexOf(td);
+      if (idx < 0) continue;
+      // Après la cellule taille : qty (idx+1), qtyTotal (idx+2), prix unitaire (idx+3).
+      const qtyCell = rowTds[idx + 1];
+      const priceCell = rowTds[idx + 3];
+      if (!qtyCell || !priceCell) continue;
+      // En cas de modif, la cellule affiche « ancien → nouveau ». On prend le dernier.
+      const qtyNums = (qtyCell.textContent || "").match(/\d+/g);
+      if (!qtyNums) continue;
+      const qty = parseInt(qtyNums[qtyNums.length - 1], 10);
+      const euroMatches = Array.from(
+        (priceCell.textContent || "").matchAll(/(\d[\d\s.,]*)\s*€/g)
+      );
+      if (!euroMatches.length) continue;
+      const lastEuro = euroMatches[euroMatches.length - 1][1];
+      const price = parseEuroAmount(lastEuro + " €");
+      if (!qty || price == null) continue;
+      infos.push({ qty: qty, price: price, packQty: packQty, used: false });
+    }
+    try {
+      console.log("[Regroupement] Beli & Jolie — PACK détectés dans le DOM :", infos);
+    } catch (e) { /* noop */ }
+    return infos;
+  }
+
+  function findBjPackMatch(packInfos, qty, price) {
+    for (const info of packInfos) {
+      if (info.used) continue;
+      if (info.qty !== qty) continue;
+      if (Math.abs(info.price - price) > 0.01) continue;
+      info.used = true;
+      return info.packQty;
+    }
+    return null;
+  }
+
   function parseBj(json) {
     if (!json || !Array.isArray(json.items)) throw new Error("Réponse API invalide.");
+    const packInfos = readBjPackInfoFromDom();
     const map = new Map();
     for (const it of json.items) {
-      const qty = typeof it.quantite === "number" ? it.quantite : parseInt(it.quantite, 10);
-      const price = typeof it.prixUnitaire === "number" ? it.prixUnitaire : parseFloat(it.prixUnitaire);
-      if (!qty || qty <= 0 || !isFinite(price)) continue;
-      addRow(map, it.categorie || "Sans catégorie", price, qty);
+      const qtyRaw = typeof it.quantite === "number" ? it.quantite : parseInt(it.quantite, 10);
+      const priceRaw = typeof it.prixUnitaire === "number" ? it.prixUnitaire : parseFloat(it.prixUnitaire);
+      if (!qtyRaw || qtyRaw <= 0 || !isFinite(priceRaw)) continue;
+      const packQty = findBjPackMatch(packInfos, qtyRaw, priceRaw);
+      const qty = packQty ? qtyRaw * packQty : qtyRaw;
+      const price = packQty ? priceRaw / packQty : priceRaw;
+      // Réf / couleur / nom / image lus défensivement : l'endpoint /regroup
+      // doit exposer ces champs pour permettre l'export Sage 50 (réf en gras
+      // + détail des couleurs dans la Description RTF).
+      addRow(map, it.categorie || "Sans catégorie", price, qty, {
+        ref: firstNonEmpty(it.reference, it.ref, it.productRef),
+        name: firstNonEmpty(it.name, it.productName, it.designation),
+        image: firstImageUrl(it.image, it.imageUrl, it.thumbnail),
+        color: firstNonEmpty(it.color, it.colorName, it.couleur, it.couleurNom)
+      });
     }
 
     function bjAddrToFields(addr, kind) {
@@ -896,7 +1211,12 @@
       const price = typeof it.unitPrice === "number" ? it.unitPrice : parseFloat(it.unitPrice);
       if (!qty || qty <= 0 || !isFinite(price)) continue;
       const cat = it.categoryName || detectCategory(it.name) || "Sans catégorie";
-      addRow(map, cat, price, qty);
+      addRow(map, cat, price, qty, {
+        ref: firstNonEmpty(it.reference, it.sku, it.ref, it.productRef),
+        name: it.name || null,
+        image: firstImageUrl(it.image, it.imageUrl, it.imagePath),
+        color: firstNonEmpty(it.colorName, it.color)
+      });
     }
 
     const customer = order.customer || {};
@@ -1011,7 +1331,13 @@
       if (!qty || price == null) continue;
       seenRows.add(tr);
       const cat = detectCategory(name);
-      addRow(map, cat, price, qty);
+      const rowImg = tr.querySelector("img");
+      const skuMatch = (tr.textContent || "").match(/SKU\s*:?\s*([A-Za-z0-9][\w-]*)/i);
+      addRow(map, cat, price, qty, {
+        ref: skuMatch ? skuMatch[1] : null,
+        name: name,
+        image: rowImg && /^https?:\/\//i.test(rowImg.src || "") ? rowImg.src : null
+      });
     }
 
     console.log("[OC] lignes regroupées :", map.size, "numéro :", orderNo);
@@ -1291,6 +1617,7 @@
 
     const footer = el("div", { id: "pfs-modal-footer" }, [
       imgStrip,
+      el("button", { id: "pfs-sage-btn", type: "button", text: "Exporter CSV Sage", onClick: exportToSageCsv }),
       el("button", { id: "pfs-pdf-btn", type: "button", text: "Exporter en PDF", onClick: exportToPdf }),
       el("button", { id: "pfs-close-btn", type: "button", text: "Fermer", onClick: hideModal })
     ]);
@@ -1401,6 +1728,7 @@
     _currentOrderInfo = null;
     _secretClickCount = 0;
     const pdfBtn = document.getElementById("pfs-pdf-btn");
+    const sageBtn = document.getElementById("pfs-sage-btn");
 
     if (state.loading) {
       body.appendChild(el("p", { className: "pfs-info", text: "Chargement de la commande…" }));
@@ -1411,9 +1739,11 @@
       body.appendChild(el("p", { className: "pfs-error", text: state.error }));
       footer.style.display = "flex";
       if (pdfBtn) pdfBtn.style.display = "none";
+      if (sageBtn) sageBtn.style.display = "none";
       return;
     }
     if (pdfBtn) pdfBtn.style.display = "";
+    if (sageBtn) sageBtn.style.display = "";
 
     const rows = state.rows || [];
     const orderInfo = state.orderInfo || {};
@@ -1445,9 +1775,14 @@
           for (const f of fields) {
             const row = el("div", { className: "pfs-address-row" });
             if (f.label) {
+              // Toutes les infos entreprise (société, contact, adresse, CP,
+              // ville, pays, téléphone, email, SIRET, TVA…) sont affichées et
+              // copiées en majuscules — demande explicite pour préparer des
+              // étiquettes / factures homogènes quel que soit le marketplace.
+              const upper = String(f.value || "").toLocaleUpperCase("fr-FR");
               row.appendChild(el("dt", { text: f.label + " :" }));
-              row.appendChild(el("dd", { text: f.value }));
-              row.appendChild(makeCopyButton(f.value));
+              row.appendChild(el("dd", { text: upper }));
+              row.appendChild(makeCopyButton(upper));
             } else {
               row.appendChild(el("dd", { className: "pfs-address-note", text: f.value }));
             }
@@ -1567,6 +1902,517 @@
       + '<td></td>'
       + '<td class="r"><strong>' + escapeHtml(fmtEuro(totalHT)) + '</strong></td>'
       + '</tr></tfoot></table></body></html>';
+  }
+
+  // ---- Export CSV Sage 50 ----
+  // Format = celui de l'import paramétrable « Import des pièces » du dossier
+  // Sage de l'utilisateur : 9 colonnes séparées par « ; », décimale virgule,
+  // date JJ/MM/AAAA, 1 ligne de titres à ignorer. Une ligne E (en-tête,
+  // client SAGE_CLIENT_CODE par défaut, N° de pièce vide = numérotation auto)
+  // puis une ligne L par ligne regroupée du modal.
+  const SAGE_CLIENT_CODE = "003";
+  const SAGE_TVA_RATE = "20,00";
+
+  // Les 19 articles du dossier Sage (liste déroulante de l'écran d'attribution).
+  const SAGE_ARTICLES = [
+    { code: "ART0001", label: "Collier" },
+    { code: "ART0002", label: "Bracelet" },
+    { code: "ART0003", label: "Boucles d'oreilles" },
+    { code: "ART0004", label: "Bague" },
+    { code: "ART0005", label: "Parure de bijoux" },
+    { code: "ART0006", label: "Chaîne de cheville" },
+    { code: "ART0007", label: "Lot de colliers" },
+    { code: "ART0008", label: "Lot de bracelets" },
+    { code: "ART0009", label: "Lot de boucles d'oreilles" },
+    { code: "ART0010", label: "Lot de bagues" },
+    { code: "ART0011", label: "Lot de parures de bijoux" },
+    { code: "ART0012", label: "Lot de chaînes de cheville" },
+    { code: "ART0013", label: "Présentoir" },
+    { code: "ART0014", label: "Pendentif" },
+    { code: "ART0015", label: "Lot de bagues et de bracelet" },
+    { code: "ART0016", label: "Jonc" },
+    { code: "ART0017", label: "Sac" },
+    { code: "ART0018", label: "Broche" },
+    { code: "ART0019", label: "Piercing" }
+  ];
+
+  // Libellé (catégorie marketplace, catégorie Beli & Jolie, ou nom de produit
+  // en repli) → code article Sage, en 5 temps :
+  //   1. lots explicites (« Lot de 16 boucles d'oreilles… ») → article LOT ;
+  //   2. présentoir GARNI (« Présentoir de 16 boucles d'oreilles ») → article
+  //      LOT du bijou concerné (décision Boris, 27/08/2026) ;
+  //   3. « lot » sans contenu identifiable (« Lots avec présentoir » chez PFS)
+  //      → "" : résolution par référence via l'API, puis écran manuel — ne
+  //      JAMAIS retomber sur un article à l'unité ni sur ART0013 ;
+  //   4. présentoir seul (vide) → ART0013 ;
+  //   5. articles à l'unité (jonc avant bracelet, chaîne de cheville avant
+  //      bracelet).
+  const SAGE_LOT_RULES = [
+    { code: "ART0015", pattern: /lots?\s+de\s+(?:\d+\s+)?bagues?\s+et\s+(?:de\s+)?bracelets?/i },
+    { code: "ART0007", pattern: /lots?\s+de\s+(?:\d+\s+)?colliers?/i },
+    { code: "ART0008", pattern: /lots?\s+de\s+(?:\d+\s+)?bracelets?/i },
+    { code: "ART0009", pattern: /lots?\s+de\s+(?:\d+\s+)?(?:paires?\s+de\s+)?boucles?/i },
+    { code: "ART0010", pattern: /lots?\s+de\s+(?:\d+\s+)?bagues?/i },
+    { code: "ART0011", pattern: /lots?\s+de\s+(?:\d+\s+)?parures?/i },
+    { code: "ART0012", pattern: /lots?\s+de\s+(?:\d+\s+)?cha[îi]nes?\s+de\s+chevilles?/i }
+  ];
+  const SAGE_LOT_BY_TYPE = [
+    { code: "ART0009", pattern: /boucles?/i },
+    { code: "ART0012", pattern: /cha[îi]nes?\s+de\s+chevilles?/i },
+    { code: "ART0008", pattern: /bracelets?|joncs?/i },
+    { code: "ART0015", pattern: /bagues?\s+et\s+bracelets?/i },
+    { code: "ART0010", pattern: /bagues?/i },
+    { code: "ART0011", pattern: /parures?/i },
+    { code: "ART0007", pattern: /colliers?|sautoirs?/i }
+  ];
+  const SAGE_UNIT_RULES = [
+    { code: "ART0003", pattern: /boucles?\s*d['’]?\s*oreilles?|cr[ée]oles?|clous?\s*d['’]?\s*oreilles?/i },
+    { code: "ART0006", pattern: /cha[îi]nes?\s+de\s+chevilles?/i },
+    { code: "ART0016", pattern: /joncs?/i },
+    { code: "ART0002", pattern: /bracelets?|cha[îi]nes?\s+de\s+mains?/i },
+    { code: "ART0004", pattern: /bagues?|anneaux?|solitaires?/i },
+    { code: "ART0005", pattern: /parures?/i },
+    { code: "ART0014", pattern: /pendentifs?/i },
+    { code: "ART0001", pattern: /colliers?|sautoirs?/i },
+    // Un pochon est facturé comme un sac (même code Sage ART0017) — mais la
+    // Description RTF affichera « POCHON » car on privilégie la catégorie
+    // réelle du produit sur le libellé Sage (cf. buildSageCsvFromItems).
+    { code: "ART0017", pattern: /\bpochons?\b/i },
+    { code: "ART0017", pattern: /\bsacs?\b/i },
+    { code: "ART0018", pattern: /broches?/i },
+    { code: "ART0019", pattern: /piercings?/i }
+  ];
+
+  // Sage lit le CSV en ANSI (Windows-1252) : un Blob JS encode en UTF-8, ce
+  // qui casse les accents (« DORÃ‰ »). On encode donc les octets nous-mêmes.
+  const CP1252_EXTRA = {
+    8364: 128, 8218: 130, 402: 131, 8222: 132, 8230: 133, 8224: 134,
+    8225: 135, 710: 136, 8240: 137, 352: 138, 8249: 139, 338: 140,
+    381: 142, 8216: 145, 8217: 146, 8220: 147, 8221: 148, 8226: 149,
+    8211: 150, 8212: 151, 732: 152, 8482: 153, 353: 154, 8250: 155,
+    339: 156, 382: 158, 376: 159
+  };
+
+  function encodeCp1252(str) {
+    const out = new Uint8Array(str.length);
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charCodeAt(i);
+      out[i] = c <= 0xff ? c : (CP1252_EXTRA[c] || 63); // 63 = "?"
+    }
+    return out;
+  }
+
+  // Texte → RTF : le champ description de Sage interprète le RTF à l'import
+  // (vérifié le 27/08/2026 : gras et \line rendus, HTML non). Échappe \ { }
+  // et code les accents en \'xx (octet Windows-1252).
+  function rtfEscape(s) {
+    let out = "";
+    const str = String(s == null ? "" : s);
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charAt(i);
+      const c = str.charCodeAt(i);
+      if (ch === "\\" || ch === "{" || ch === "}") out += "\\" + ch;
+      else if (c > 127) {
+        const b = c <= 0xff ? c : (CP1252_EXTRA[c] || 63);
+        out += "\\'" + b.toString(16);
+      } else out += ch;
+    }
+    return out;
+  }
+
+  // Couleur affichée en français, Capitalisée (« DORÉ » → « Doré »,
+  // « vert-deau » → « Vert deau », « Golden » → « Doré »).
+  const SAGE_COLOR_FR = {
+    golden: "Doré", gold: "Doré", silver: "Argenté", red: "Rouge",
+    blue: "Bleu", green: "Vert", black: "Noir", white: "Blanc",
+    pink: "Rose", purple: "Violet", yellow: "Jaune", orange: "Orange",
+    brown: "Marron", grey: "Gris", gray: "Gris", beige: "Beige",
+    ivory: "Ivoire", turquoise: "Turquoise", champagne: "Champagne",
+    multicolor: "Multicolore", multicolore: "Multicolore",
+    "rose gold": "Or rose", "rose-gold": "Or rose"
+  };
+
+  function formatColorFr(raw) {
+    if (!raw) return null;
+    const cleaned = String(raw).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!cleaned) return null;
+    const lower = cleaned.toLowerCase();
+    if (SAGE_COLOR_FR[lower]) return SAGE_COLOR_FR[lower];
+    const firstWord = lower.split(" ")[0];
+    if (SAGE_COLOR_FR[firstWord]) {
+      const rest = lower.slice(firstWord.length).trim();
+      return rest ? SAGE_COLOR_FR[firstWord] + " " + rest : SAGE_COLOR_FR[firstWord];
+    }
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }
+
+  // Champ CSV : guillemets obligatoires si le texte contient le séparateur,
+  // un guillemet ou un retour à la ligne (délimiteur de texte « " » à
+  // déclarer dans le format d'import Sage).
+  function csvField(v) {
+    const s = String(v == null ? "" : v);
+    if (/[";\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+
+  // Libellé (désignation) d'un article Sage — colonne Description du CSV,
+  // mappée sur la rubrique « Lg Description » du format d'import.
+  function sageArticleLabel(code) {
+    if (!code) return "";
+    for (const a of SAGE_ARTICLES) {
+      if (a.code === code) return a.label;
+    }
+    return "";
+  }
+
+  function sageArticleForCategory(cat) {
+    if (!cat) return "";
+    for (const rule of SAGE_LOT_RULES) {
+      if (rule.pattern.test(cat)) return rule.code;
+    }
+    const hasDisplay = /pr[ée]sentoirs?|supports?/i.test(cat);
+    if (hasDisplay) {
+      for (const rule of SAGE_LOT_BY_TYPE) {
+        if (rule.pattern.test(cat)) return rule.code;
+      }
+    }
+    if (/lots?\b/i.test(cat)) return "";
+    if (hasDisplay) return "ART0013";
+    for (const rule of SAGE_UNIT_RULES) {
+      if (rule.pattern.test(cat)) return rule.code;
+    }
+    return "";
+  }
+
+  function fmtSageDate(d) {
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    return dd + "/" + mm + "/" + d.getFullYear();
+  }
+
+  function fmtSagePrice(n) {
+    return n.toFixed(2).replace(".", ",");
+  }
+
+  // Clé de mémorisation d'un choix manuel : site + référence (ou nom, ou
+  // catégorie) — le même produit ne sera demandé qu'une seule fois.
+  function sageStorageKey(item) {
+    return site + "|" + (item.ref || item.name || item.categorie || "?");
+  }
+
+  function sageLoadManualMap() {
+    return new Promise(function (resolve) {
+      try {
+        chrome.storage.local.get("sageManualMap", function (r) {
+          resolve((r && r.sageManualMap) || {});
+        });
+      } catch (e) {
+        resolve({});
+      }
+    });
+  }
+
+  function sageSaveManualMap(map) {
+    try {
+      chrome.storage.local.set({ sageManualMap: map });
+    } catch (e) { /* noop */ }
+  }
+
+  // Interroge l'API publique Beli & Jolie (via le service worker) pour
+  // retrouver la catégorie boutique de chaque référence marketplace.
+  function sageLookupRefs(refs) {
+    return new Promise(function (resolve) {
+      if (!refs.length) return resolve({});
+      try {
+        chrome.runtime.sendMessage({ type: "SAGE_LOOKUP_REFS", refs: refs }, function (resp) {
+          if (chrome.runtime.lastError || !resp || !resp.ok) resolve({});
+          else resolve(resp.data || {});
+        });
+      } catch (e) {
+        resolve({});
+      }
+    });
+  }
+
+  function buildSageCsvFromItems(items) {
+    // Une ligne par (article Sage, prix, référence produit), avec le détail
+    // des couleurs commandées dans la description et la quantité totale.
+    // Ex : "Lot de boucles d'oreilles - PRT-OREILLE170 - ROUGE x3 - BLEU x8",
+    // Qté = 11.
+    const agg = new Map();
+    const missing = [];
+    for (const it of items) {
+      const code = it.code || "";
+      const refKey = it.ref || it.name || "";
+      const key = code + "||" + it.prixUnitaire.toFixed(4) + "||" + refKey;
+      if (!agg.has(key)) {
+        agg.set(key, {
+          code: code,
+          prixUnitaire: it.prixUnitaire,
+          quantite: 0,
+          ref: it.ref || null,
+          // Libellé de la Description RTF : on privilégie la catégorie réelle
+          // du produit (boutique BJ d'abord, sinon marketplace) sur le label
+          // officiel de l'article Sage. Sans ça un « Pochon » facturé sur
+          // ART0017 s'afficherait « SAC » (le label Sage), pas « POCHON ».
+          descLabel: firstNonEmpty(it.bjCategory, it.categorie, sageArticleLabel(code)),
+          colors: new Map()
+        });
+      }
+      const g = agg.get(key);
+      g.quantite += it.quantite;
+      const colorFr = formatColorFr(it.color);
+      if (colorFr) {
+        g.colors.set(colorFr, (g.colors.get(colorFr) || 0) + it.quantite);
+      }
+      if (!code) {
+        const label = it.name || it.bjCategory || it.categorie || "Produit inconnu";
+        if (missing.indexOf(label) === -1) missing.push(label);
+      }
+    }
+    const list = Array.from(agg.values());
+    list.sort(function (a, b) {
+      if (a.code !== b.code) return a.code < b.code ? -1 : 1;
+      if ((a.ref || "") !== (b.ref || "")) return (a.ref || "") < (b.ref || "") ? -1 : 1;
+      return a.prixUnitaire - b.prixUnitaire;
+    });
+    const lines = ["TypeLigne;TypePiece;NumPiece;DatePiece;CodeClient;CodeArticle;Quantite;PUHT;TauxTVA;Description"];
+    lines.push(["E", "Facture", "", fmtSageDate(new Date()), SAGE_CLIENT_CODE, "", "", "", "", ""].join(";"));
+    for (const l of list) {
+      // Description en RTF, sur UNE ligne du fichier (l'import Sage lit ligne
+      // à ligne — un vrai retour à la ligne casse l'import, mais le champ
+      // interprète le RTF) : « LIBELLÉ EN MAJUSCULES - <réf en gras> », puis
+      // \line par couleur (« Doré x1 »).
+      const label = l.descLabel || sageArticleLabel(l.code);
+      let head = label ? rtfEscape(label.toUpperCase()) : "";
+      if (l.ref) head += (head ? " - " : "") + "\\b " + rtfEscape(l.ref) + "\\b0";
+      let body = "";
+      for (const entry of l.colors.entries()) {
+        body += "\\line " + rtfEscape(entry[0] + " x" + entry[1]);
+      }
+      const desc = head || body
+        ? ("{\\rtf1\\ansi\\deff0 " + head + body + "}").replace(/;/g, ",")
+        : "";
+      lines.push(["L", "", "", "", "", l.code, String(l.quantite), fmtSagePrice(l.prixUnitaire), SAGE_TVA_RATE, csvField(desc)].join(";"));
+    }
+    return { csv: lines.join("\r\n") + "\r\n", missing: missing };
+  }
+
+  function downloadSageCsv(csv) {
+    const orderNo =
+      String((_currentOrderInfo && _currentOrderInfo.orderNo) || "commande").replace(/[^\w.-]+/g, "_") ||
+      "commande";
+    const blob = new Blob([encodeCp1252(csv)], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "sage_facture_" + orderNo + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function finishSageExport(items) {
+    const built = buildSageCsvFromItems(items);
+    downloadSageCsv(built.csv);
+    const body = document.getElementById("pfs-modal-body");
+    const oldWarn = document.getElementById("pfs-sage-warn");
+    if (oldWarn) oldWarn.remove();
+    if (built.missing.length && body) {
+      body.appendChild(
+        el("p", {
+          id: "pfs-sage-warn",
+          className: "pfs-warn",
+          text:
+            "CSV exporté, mais sans code article Sage pour : " +
+            built.missing.join(", ") +
+            ". Complétez la colonne CodeArticle de ces lignes dans Excel avant l'import."
+        })
+      );
+      body.scrollTop = body.scrollHeight;
+    }
+  }
+
+  async function exportToSageCsv() {
+    if (!_originalRows.length || !_currentOrderInfo) return;
+    const btn = document.getElementById("pfs-sage-btn");
+    const factor = getSecretFactor(_secretClickCount);
+
+    // Une entrée par produit (pas par ligne regroupée) : deux produits
+    // fusionnés dans la même ligne du tableau peuvent avoir des catégories
+    // Beli & Jolie différentes.
+    const items = [];
+    for (const r of _originalRows) {
+      const metas = r.items && r.items.length ? r.items : [{ quantite: r.quantite, ref: null, name: null, image: null }];
+      for (const m of metas) {
+        items.push({
+          categorie: r.categorie,
+          prixUnitaire: r.prixUnitaire / factor,
+          quantite: m.quantite * factor,
+          ref: m.ref,
+          name: m.name,
+          image: m.image,
+          color: m.color,
+          code: ""
+        });
+      }
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = "Recherche des catégories…"; }
+    let unresolved;
+    try {
+      // 1. Source de vérité : la boutique Beli & Jolie, interrogée par
+      // référence pour TOUT produit qui en a une (la catégorie marketplace
+      // n'est jamais prioritaire sur la catégorie boutique).
+      const refs = [];
+      for (const it of items) {
+        if (it.ref && refs.indexOf(it.ref) === -1) refs.push(it.ref);
+      }
+      const found = refs.length ? await sageLookupRefs(refs) : {};
+      for (const it of items) {
+        const info = it.ref ? found[it.ref] : null;
+        if (info) {
+          if (info.category) {
+            it.bjCategory = info.category;
+            it.code = sageArticleForCategory(info.category);
+          }
+          if (info.name) {
+            const codeFromName = sageArticleForCategory(info.name);
+            if (!it.code) {
+              it.code = codeFromName;
+            } else if (it.code === "ART0013" && codeFromName && codeFromName !== "ART0013") {
+              // Catégorie boutique « Présentoirs » mais nom « Lot de 16
+              // boucles d'oreilles… » : présentoir garni → lot du bijou.
+              it.code = codeFromName;
+            } else if (it.code === "ART0002" && codeFromName === "ART0016") {
+              // Catégorie boutique « Bracelet » mais nom « Bracelet jonc… » :
+              // le jonc a son propre article Sage (ART0016).
+              it.code = codeFromName;
+              it.bjCategory = "Bracelet jonc";
+            }
+          }
+          if (!it.image && info.image) it.image = info.image;
+          if (!it.name && info.name) it.name = info.name;
+        }
+        // 2. Repli local (référence absente ou introuvable sur la boutique) :
+        // catégorie marketplace, puis nom du produit.
+        if (!it.code) it.code = sageArticleForCategory(it.categorie);
+        if (!it.code && it.name) it.code = sageArticleForCategory(it.name);
+        // Même exception jonc qu'au niveau boutique : les catégories
+        // marketplace génériques (« Bracelet » via normalizeFaireCategory)
+        // masquent le jonc, dont l'article Sage est distinct (ART0016).
+        if (it.code === "ART0002" && it.name && /joncs?/i.test(it.name)) {
+          it.code = "ART0016";
+        }
+      }
+
+      // 3. Choix manuels mémorisés lors d'exports précédents.
+      unresolved = items.filter(function (it) { return !it.code; });
+      if (unresolved.length) {
+        const manual = await sageLoadManualMap();
+        for (const it of unresolved) {
+          const saved = manual[sageStorageKey(it)];
+          if (saved) it.code = saved;
+        }
+        unresolved = unresolved.filter(function (it) { return !it.code; });
+      }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Exporter CSV Sage"; }
+    }
+
+    if (!unresolved.length) {
+      finishSageExport(items);
+      return;
+    }
+    // 3. Dernier recours : attribution manuelle (mémorisée pour la suite).
+    showSagePicker(unresolved, items);
+  }
+
+  function showSagePicker(unresolved, allItems) {
+    const body = document.getElementById("pfs-modal-body");
+    if (!body) return;
+    const old = document.getElementById("pfs-sage-picker");
+    if (old) old.remove();
+    const oldWarn = document.getElementById("pfs-sage-warn");
+    if (oldWarn) oldWarn.remove();
+
+    // Un même produit (même clé) présent sur plusieurs lignes n'est demandé qu'une fois.
+    const groups = new Map();
+    for (const it of unresolved) {
+      const k = sageStorageKey(it);
+      if (!groups.has(k)) groups.set(k, { key: k, items: [], sample: it });
+      groups.get(k).items.push(it);
+    }
+
+    const panel = el("div", { id: "pfs-sage-picker" });
+    panel.appendChild(el("h3", { text: "Avant l'export : attribuez un article Sage à ces produits" }));
+    panel.appendChild(
+      el("p", {
+        className: "pfs-sage-pick-hint",
+        text:
+          "Ces produits n'ont pas été reconnus (ni par leur catégorie marketplace, ni sur beliandjolie.com). " +
+          "Choisissez l'article Sage de chacun — le choix sera mémorisé pour les prochains exports."
+      })
+    );
+
+    const selects = [];
+    for (const g of groups.values()) {
+      const row = el("div", { className: "pfs-sage-pick-row" });
+      if (g.sample.image) {
+        row.appendChild(el("img", { className: "pfs-sage-pick-img", src: g.sample.image, alt: "" }));
+      } else {
+        row.appendChild(el("div", { className: "pfs-sage-pick-img pfs-sage-pick-noimg", text: "?" }));
+      }
+      const info = el("div", { className: "pfs-sage-pick-info" });
+      info.appendChild(el("div", { className: "pfs-sage-pick-name", text: g.sample.name || g.sample.categorie || "Produit" }));
+      const detBits = [];
+      if (g.sample.ref) detBits.push("Réf. " + g.sample.ref);
+      if (g.sample.bjCategory) detBits.push("Catégorie boutique : " + g.sample.bjCategory);
+      else if (g.sample.categorie) detBits.push("Catégorie marketplace : " + g.sample.categorie);
+      if (detBits.length) info.appendChild(el("div", { className: "pfs-sage-pick-detail", text: detBits.join(" — ") }));
+      row.appendChild(info);
+
+      const sel = document.createElement("select");
+      sel.className = "pfs-sage-pick-select";
+      sel.appendChild(new Option("— Choisir un article Sage —", ""));
+      for (const a of SAGE_ARTICLES) {
+        sel.appendChild(new Option(a.code + " — " + a.label, a.code));
+      }
+      row.appendChild(sel);
+      selects.push({ group: g, sel: sel });
+      panel.appendChild(row);
+    }
+
+    const actions = el("div", { className: "pfs-sage-pick-actions" }, [
+      el("button", {
+        className: "pfs-sage-pick-cancel",
+        type: "button",
+        text: "Annuler",
+        onClick: function () { panel.remove(); }
+      }),
+      el("button", {
+        className: "pfs-sage-pick-ok",
+        type: "button",
+        text: "Valider et exporter le CSV",
+        onClick: onValidate
+      })
+    ]);
+    panel.appendChild(actions);
+    body.appendChild(panel);
+    panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+    async function onValidate() {
+      const manual = await sageLoadManualMap();
+      for (const s of selects) {
+        const code = s.sel.value;
+        for (const it of s.group.items) it.code = code || "";
+        if (code) manual[s.group.key] = code;
+      }
+      sageSaveManualMap(manual);
+      panel.remove();
+      finishSageExport(allItems);
+    }
   }
 
   function exportToPdf() {

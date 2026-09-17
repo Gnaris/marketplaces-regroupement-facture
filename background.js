@@ -23,6 +23,7 @@ const SHOPIFY_QUERY = `query OrderRegroup($id: ID!) {
           currentQuantity
           variantTitle
           sku
+          image { url }
           originalUnitPriceSet { shopMoney { amount currencyCode } }
         }
       }
@@ -60,6 +61,10 @@ const EFP_QUERY = `query GetOrderDetail($id: Int!) {
       quantite_total
       corbeille
       categorie
+      reference
+      reference_base
+      couleur_FR
+      imageUrl
     }
   }
 }`;
@@ -86,6 +91,26 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     const data = tabId != null ? lastMcOrders.get(tabId) : null;
     sendResponse({ ok: !!data, data: data || null });
     return;
+  }
+
+  if (message.type === "SAGE_LOOKUP_REFS") {
+    const refs = Array.isArray(message.refs) ? message.refs.slice(0, 60) : [];
+    Promise.all(
+      refs.map(function (ref) {
+        return lookupBjRef(String(ref));
+      })
+    )
+      .then(function (results) {
+        const out = {};
+        refs.forEach(function (ref, i) {
+          if (results[i]) out[ref] = results[i];
+        });
+        sendResponse({ ok: true, data: out });
+      })
+      .catch(function (err) {
+        sendResponse({ ok: false, error: (err && err.message) || String(err) });
+      });
+    return true;
   }
 
   if (message.type !== "FETCH_ORDER") return;
@@ -274,6 +299,57 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
 
   sendResponse({ ok: false, error: "Site inconnu : " + site });
 });
+
+// ---- Résolution catégorie via l'API publique Beli & Jolie ----
+// GET /api/public/products avec le header x-product-reference renvoie le
+// produit (catégorie + images). Les SKU marketplace de la forme
+// {REFERENCE}_{COULEUR} (Ankorstore, etc.) sont retentés avec la partie
+// avant le premier « _ » si la référence complète est introuvable.
+const BJ_PUBLIC_API = "https://beliandjolie.com/api/public/products";
+const BJ_PUBLIC_API_KEY = "kebab";
+
+function fetchBjProduct(reference) {
+  return fetch(BJ_PUBLIC_API, {
+    method: "GET",
+    headers: {
+      "x-api-key": BJ_PUBLIC_API_KEY,
+      "x-product-reference": reference,
+      Accept: "application/json"
+    }
+  })
+    .then(function (resp) {
+      return resp.ok ? resp.json() : null;
+    })
+    .catch(function () {
+      return null;
+    });
+}
+
+function shapeBjLookup(p) {
+  let image = null;
+  if (Array.isArray(p.colors)) {
+    for (const c of p.colors) {
+      if (c && Array.isArray(c.imageUrls) && c.imageUrls.length) {
+        image = c.imageUrls[0];
+        break;
+      }
+    }
+  }
+  return { category: p.category || null, name: p.name || null, image: image };
+}
+
+function lookupBjRef(ref) {
+  const trimmed = ref.trim();
+  if (!trimmed) return Promise.resolve(null);
+  return fetchBjProduct(trimmed).then(function (json) {
+    if (json && json.product) return shapeBjLookup(json.product);
+    const base = trimmed.split("_")[0].trim();
+    if (!base || base === trimmed) return null;
+    return fetchBjProduct(base).then(function (j2) {
+      return j2 && j2.product ? shapeBjLookup(j2.product) : null;
+    });
+  });
+}
 
 function handleResponse(sendResponse) {
   return function (resp) {
