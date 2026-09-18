@@ -7,6 +7,7 @@
   const HOST_SHOPIFY = "admin.shopify.com";
   const HOST_BJ = "beliandjolie.com";
   const HOST_BM = "www.bijouxmysteres.fr";
+  const HOST_ISSYMA = "issyma.fr";
   const host = location.hostname;
   let site = null;
   if (host === HOST_PFS) site = "pfs";
@@ -17,6 +18,7 @@
   else if (host === HOST_OC) site = "oc";
   else if (host === HOST_SHOPIFY) site = "shopify";
   else if (host === HOST_BJ || host === "www." + HOST_BJ || host === "localhost") site = "bj";
+  else if (host === HOST_ISSYMA || host === "www." + HOST_ISSYMA) site = "issyma";
   else if (host === HOST_BM) site = "bm";
   if (!site) return;
 
@@ -132,7 +134,7 @@
       const m = location.pathname.match(/^\/store\/[^\/]+\/orders\/(\d+)/);
       return m ? m[1] : null;
     }
-    if (site === "bj" || site === "bm") {
+    if (site === "bj" || site === "bm" || site === "issyma") {
       const m = location.pathname.match(/^\/admin\/commandes\/([^\/\?]+)/);
       return m ? m[1] : null;
     }
@@ -160,7 +162,7 @@
     if (site === "mc") return host === HOST_MC;
     if (site === "oc") return /^\/[a-z]{2}\/backoffice\/orders\/\d+\/?$/.test(location.pathname);
     if (site === "shopify") return /^\/store\/[^\/]+\/orders\/\d+\/?$/.test(location.pathname);
-    if (site === "bj" || site === "bm") return /^\/admin\/commandes\/[^\/\?]+\/?$/.test(location.pathname);
+    if (site === "bj" || site === "bm" || site === "issyma") return /^\/admin\/commandes\/[^\/\?]+\/?$/.test(location.pathname);
     return false;
   }
 
@@ -250,7 +252,7 @@
                 site: site,
                 orderId: orderId,
                 token: cachedToken,
-                apiBase: site === "aks" || site === "bj" ? location.origin : undefined,
+                apiBase: site === "aks" || site === "bj" || site === "issyma" ? location.origin : undefined,
                 storeName: shopifyStoreName,
                 csrfToken: shopifyCsrfToken
               },
@@ -275,7 +277,7 @@
       else if (site === "efp") parsed = parseEfp(result.data);
       else if (site === "aks") parsed = parseAks(result.data, orderId);
       else if (site === "shopify") parsed = parseShopify(result.data);
-      else if (site === "bj") parsed = parseBj(result.data);
+      else if (site === "bj" || site === "issyma") parsed = parseBj(result.data);
       else if (site === "bm") parsed = parseBm(result.data);
       else parsed = parseFaire(result.data, cachedFaireCustomer);
       showModal({ rows: parsed.rows, orderInfo: parsed.orderInfo });
@@ -2265,9 +2267,14 @@
       // 1. Source de vérité : la boutique Beli & Jolie, interrogée par
       // référence pour TOUT produit qui en a une (la catégorie marketplace
       // n'est jamais prioritaire sur la catégorie boutique).
+      // Issyma est un autre tenant sur la même app : l'API publique BJ ne
+      // contient pas ses produits (404) et une collision de référence donnerait
+      // une fausse catégorie — donc on saute le lookup pour ce site.
       const refs = [];
-      for (const it of items) {
-        if (it.ref && refs.indexOf(it.ref) === -1) refs.push(it.ref);
+      if (site !== "issyma") {
+        for (const it of items) {
+          if (it.ref && refs.indexOf(it.ref) === -1) refs.push(it.ref);
+        }
       }
       const found = refs.length ? await sageLookupRefs(refs) : {};
       for (const it of items) {

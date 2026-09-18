@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.17.2",
+  "version": "3.18.0",
   "permissions": ["storage"],
-  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères.",
+  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères + Issyma.",
   "host_permissions": [
     "https://wholesaler.parisfashionshops.com/*",
     "https://wholesaler-api.parisfashionshops.com/*",
@@ -19,6 +19,8 @@
     "https://www.beliandjolie.com/*",
     "https://www.bijouxmysteres.fr/*",
     "https://server.bijouxmysteres.fr/*",
+    "https://issyma.fr/*",
+    "https://www.issyma.fr/*",
     "http://localhost:3000/*"
   ],
   "background": {
@@ -36,6 +38,8 @@
         "https://beliandjolie.com/admin/commandes/*",
         "https://www.beliandjolie.com/admin/commandes/*",
         "https://www.bijouxmysteres.fr/admin/commandes/*",
+        "https://issyma.fr/admin/commandes/*",
+        "https://www.issyma.fr/admin/commandes/*",
         "http://localhost:3000/admin/commandes/*"
       ],
       "js": ["content.js"],
@@ -88,6 +92,8 @@
         "https://beliandjolie.com/*",
         "https://www.beliandjolie.com/*",
         "https://www.bijouxmysteres.fr/*",
+        "https://issyma.fr/*",
+        "https://www.issyma.fr/*",
         "http://localhost:3000/*"
       ]
     }

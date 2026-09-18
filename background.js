@@ -274,12 +274,17 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return true;
   }
 
-  if (site === "bj") {
+  if (site === "bj" || site === "issyma") {
     if (!orderId) {
       sendResponse({ ok: false, error: "ID commande manquant." });
       return;
     }
-    const apiBase = message.apiBase || "https://beliandjolie.com";
+    // Beli & Jolie et Issyma partagent la même app Next.js multi-tenant :
+    // même endpoint, même contrat, apiBase (location.origin) sélectionne
+    // simplement le domaine — le middleware côté serveur résout le tenant
+    // par le host de la requête.
+    const defaultBase = site === "issyma" ? "https://issyma.fr" : "https://beliandjolie.com";
+    const apiBase = message.apiBase || defaultBase;
     const url =
       apiBase +
       "/api/admin/commandes/" +
