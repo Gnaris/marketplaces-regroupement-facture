@@ -532,18 +532,22 @@
     pushField(pfsBilling, "EORI", idn.eori);
     if (pfsBilling.length) pfsAddresses.push({ title: "Adresse de facturation", fields: pfsBilling });
 
+    // TTC fourni par la plateforme : PFS expose `summary.total_incl_tax`
+    // (nom explicite TVA incluse). On ne retombe PAS sur `validated_vat` /
+    // `order_vat` même si c'est parfois non-null — ces champs sont des
+    // montants de TVA (tax amount), pas des totaux, et varient selon le
+    // régime de taxation de la commande.
+    const pfsSummary = order.summary || {};
+    const pfsTotalTTC =
+      typeof pfsSummary.total_incl_tax === "number" && isFinite(pfsSummary.total_incl_tax)
+        ? pfsSummary.total_incl_tax
+        : null;
+
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: order.order_no || "",
-        totalVerif:
-          typeof order.validated_vat === "number"
-            ? order.validated_vat
-            : typeof order.order_vat === "number"
-            ? order.order_vat
-            : order.summary && typeof order.summary.total_incl_tax === "number"
-            ? order.summary.total_incl_tax
-            : null,
+        totalTTC: pfsTotalTTC,
         addresses: pfsAddresses
       }
     };
@@ -592,11 +596,16 @@
     pushField(efpBilling, "EORI", a.eori);
     if (efpBilling.length) efpAddresses.push({ title: "Adresse de facturation", fields: efpBilling });
 
+    // TTC EFP : la query GraphQL ne demande actuellement que `montantApresRemise`
+    // (montant HT après remise). Le champ TTC n'est pas récupéré car on n'a pas
+    // encore vérifié son nom exact dans le schéma Efashion-Paris — étendre
+    // EFP_QUERY avec le bon champ TTC (ex. `montantTTC`) et le remonter ici
+    // dès que le schéma est confirmé.
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: order.id_commande_name || "",
-        totalVerif: typeof order.montantApresRemise === "number" ? order.montantApresRemise : null,
+        totalTTC: null,
         addresses: efpAddresses
       }
     };
@@ -693,9 +702,26 @@
 
     const aksAddresses = [];
     let orderNo = "";
+    // Ankorstore expose les totaux sur `data.attributes.*` en **centimes**
+    // ({ amount, currency }). Candidats défensifs car on n'a pas de capture
+    // live : `totalIncludingTaxes`, `totalInclTax`, `grandTotal`, `total`.
+    // Si aucun ne matche, totalTTC reste null (affiché « — » dans le modal).
+    let aksTotalTTC = null;
     if (detailJson && detailJson.data && detailJson.data.attributes) {
       const attr = detailJson.data.attributes;
       if (attr.reference) orderNo = String(attr.reference);
+      const ttcCandidates = [
+        attr.totalIncludingTaxes,
+        attr.totalInclTax,
+        attr.grandTotal,
+        attr.total
+      ];
+      for (const c of ttcCandidates) {
+        if (c && typeof c === "object" && typeof c.amount === "number") {
+          aksTotalTTC = c.amount / 100;
+          break;
+        }
+      }
       const ship = attr.shipping && attr.shipping.shippingAddress;
       if (ship) {
         const addr = ship.address || {};
@@ -722,7 +748,7 @@
     }
     return {
       rows: sortRows(map),
-      orderInfo: { orderNo: orderNo, totalVerif: null, addresses: aksAddresses }
+      orderInfo: { orderNo: orderNo, totalTTC: aksTotalTTC, addresses: aksAddresses }
     };
   }
 
@@ -749,7 +775,15 @@
         color: firstNonEmpty(item.pure_color_name, item.color_name)
       });
     }
-    const totalVerif = parseFloat(doc.total_price);
+    // Microstore : `doc.total_price` est le total affiché côté vendeur,
+    // en pratique TVA incluse (= TTC) sur les commandes passées par les
+    // retailers européens. Candidats défensifs si le champ principal manque.
+    let mcTotalTTC = null;
+    const mcCandidates = [doc.total_price, doc.total_amount, doc.pay_price];
+    for (const c of mcCandidates) {
+      const v = parseFloat(c);
+      if (isFinite(v) && v > 0) { mcTotalTTC = v; break; }
+    }
 
     const addresses = [];
     const ci = doc.client_info || {};
@@ -772,7 +806,7 @@
       rows: sortRows(map),
       orderInfo: {
         orderNo: doc.number || doc.id || "",
-        totalVerif: isFinite(totalVerif) ? totalVerif : null,
+        totalTTC: mcTotalTTC,
         addresses: addresses
       }
     };
@@ -884,10 +918,24 @@
     const token =
       json.brand_order && json.brand_order.token ? json.brand_order.token : "";
     const orderNo = token.replace(/^bo_/, "").toUpperCase();
-    const totalCents =
-      json.item_subtotal && typeof json.item_subtotal.amount_cents === "number"
-        ? json.item_subtotal.amount_cents
-        : null;
+    // Faire B2B : la plateforme facture en HT (le retailer est redevable
+    // de la TVA à l'import / en auto-liquidation). Candidats défensifs
+    // au cas où une commande ferait apparaître un `total_incl_tax` /
+    // `total_amount` TTC — sinon `totalTTC` reste null.
+    let faireTotalTTC = null;
+    const faireCandidates = [
+      json.total_incl_tax,
+      json.order_total,
+      json.total_amount,
+      json.brand_order && json.brand_order.total_amount
+    ];
+    for (const c of faireCandidates) {
+      if (c && typeof c === "object" && typeof c.amount_cents === "number") {
+        faireTotalTTC = c.amount_cents / 100;
+        break;
+      }
+      if (typeof c === "number" && isFinite(c)) { faireTotalTTC = c; break; }
+    }
 
     const faireAddresses = [];
     function faireAddrToFields(addr, storeName, contactName) {
@@ -987,7 +1035,7 @@
       rows: sortRows(map),
       orderInfo: {
         orderNo: orderNo,
-        totalVerif: totalCents != null ? totalCents / 100 : null,
+        totalTTC: faireTotalTTC,
         addresses: faireAddresses
       }
     };
@@ -1056,16 +1104,22 @@
       if (billFields) addresses.push({ title: "Adresse de facturation", fields: billFields });
     }
 
-    const subtotal =
-      order.subtotalPriceSet && order.subtotalPriceSet.shopMoney
-        ? parseFloat(order.subtotalPriceSet.shopMoney.amount)
-        : NaN;
+    // Shopify : `totalPriceSet` = total TTC (TVA, livraison, remises inclus) ;
+    // `currentTotalPriceSet` = total post-refund (plus pertinent quand des
+    // lignes ont été remboursées — on le préfère si disponible).
+    function shopifyMoney(set) {
+      if (!set || !set.shopMoney || set.shopMoney.amount == null) return null;
+      const v = parseFloat(set.shopMoney.amount);
+      return isFinite(v) ? v : null;
+    }
+    const shopifyCurrent = shopifyMoney(order.currentTotalPriceSet);
+    const shopifyTotalTTC = shopifyCurrent != null ? shopifyCurrent : shopifyMoney(order.totalPriceSet);
 
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: order.name || "",
-        totalVerif: isFinite(subtotal) ? subtotal : null,
+        totalTTC: shopifyTotalTTC,
         addresses: addresses
       }
     };
@@ -1188,16 +1242,20 @@
     const billFields = bjAddrToFields(json.billing, "billing");
     if (billFields) addresses.push({ title: "Adresse de facturation", fields: billFields });
 
-    const totalVerif =
-      typeof json.subtotalHT === "number" && isFinite(json.subtotalHT)
-        ? json.subtotalHT
+    // Beli & Jolie / Issyma : l'endpoint `/api/admin/commandes/{id}/regroup`
+    // n'expose actuellement que `subtotalHT`. Pour afficher le TTC confirmé
+    // par la plateforme, étendre la route (app/api/admin/commandes/[id]/regroup/route.ts)
+    // pour renvoyer `totalTTC` (ou `totalTTC` + `tva`), puis le mapper ici.
+    const bjTotalTTC =
+      typeof json.totalTTC === "number" && isFinite(json.totalTTC)
+        ? json.totalTTC
         : null;
 
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: json.orderNo || "",
-        totalVerif: totalVerif,
+        totalTTC: bjTotalTTC,
         addresses: addresses
       }
     };
@@ -1264,14 +1322,17 @@
       if (billFields) addresses.push({ title: "Adresse de facturation", fields: billFields });
     }
 
-    const totalVerif =
-      typeof order.totalHT === "number" && isFinite(order.totalHT) ? order.totalHT : null;
+    // Bijoux Mystères : l'endpoint expose `totalHT` et `totalTTC` séparément.
+    const bmTotalTTC =
+      typeof order.totalTTC === "number" && isFinite(order.totalTTC)
+        ? order.totalTTC
+        : null;
 
     return {
       rows: sortRows(map),
       orderInfo: {
         orderNo: order.orderNumber || "",
-        totalVerif: totalVerif,
+        totalTTC: bmTotalTTC,
         addresses: addresses
       }
     };
@@ -1344,17 +1405,30 @@
 
     console.log("[OC] lignes regroupées :", map.size, "numéro :", orderNo);
 
-    let totalVerif = null;
+    // Orderchamp affiche en bas de la commande les lignes « Sous-total »,
+    // « Frais de port », « Taxes » et « Total ». La ligne « Total » est la
+    // valeur TVA incluse facturée au retailer (= TTC). On priorise un libellé
+    // explicitement TTC s'il existe (« Total TTC », « Total incl. VAT »…) et
+    // on retombe sur le simple « Total » sinon.
+    let ocTotalTTC = null;
     const totalTrs = document.querySelectorAll("table tr");
     for (const tr of totalTrs) {
       const tds = tr.children;
       if (tds.length !== 2) continue;
-      const label = (tds[0].textContent || "").replace(/\s+/g, " ").trim();
-      if (label === "Total") {
+      const label = (tds[0].textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (/^total\s+ttc$/i.test(label) || /^total\s+incl/i.test(label)) {
         const val = parseEuroAmount(tds[1].textContent);
-        if (val != null) {
-          totalVerif = val;
-          break;
+        if (val != null) { ocTotalTTC = val; break; }
+      }
+    }
+    if (ocTotalTTC == null) {
+      for (const tr of totalTrs) {
+        const tds = tr.children;
+        if (tds.length !== 2) continue;
+        const label = (tds[0].textContent || "").replace(/\s+/g, " ").trim();
+        if (label === "Total") {
+          const val = parseEuroAmount(tds[1].textContent);
+          if (val != null) { ocTotalTTC = val; break; }
         }
       }
     }
@@ -1363,7 +1437,7 @@
 
     return {
       rows: sortRows(map),
-      orderInfo: { orderNo: orderNo, totalVerif: totalVerif, addresses: ocAddresses }
+      orderInfo: { orderNo: orderNo, totalTTC: ocTotalTTC, addresses: ocAddresses }
     };
   }
 
@@ -1453,6 +1527,11 @@
   function fmtEuro(n) {
     return n.toFixed(2).replace(".", ",") + " €";
   }
+
+  // Pour afficher le TTC, on ne calcule JAMAIS côté client (certaines commandes
+  // sont exonérées, soumises à auto-liquidation, à un taux réduit, etc.) : on
+  // affiche uniquement la valeur renvoyée par la plateforme (`orderInfo.totalTTC`)
+  // et on tombe sur « — » si l'API ne l'expose pas.
 
   const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -1619,6 +1698,7 @@
 
     const footer = el("div", { id: "pfs-modal-footer" }, [
       imgStrip,
+      el("button", { id: "pfs-ee-btn", type: "button", text: "Bordereau Easy-Express", onClick: function () { openEasyExpressFromOrder(); } }),
       el("button", { id: "pfs-sage-btn", type: "button", text: "Exporter CSV Sage", onClick: exportToSageCsv }),
       el("button", { id: "pfs-pdf-btn", type: "button", text: "Exporter en PDF", onClick: exportToPdf }),
       el("button", { id: "pfs-close-btn", type: "button", text: "Fermer", onClick: hideModal })
@@ -1639,9 +1719,13 @@
     return overlay;
   }
 
-  function buildRowsTable(rows) {
+  function buildRowsTable(rows, orderInfo) {
     const totalQty = rows.reduce(function (s, r) { return s + r.quantite; }, 0);
     const totalHT = rows.reduce(function (s, r) { return s + r.quantite * r.prixUnitaire; }, 0);
+    const platformTTC =
+      orderInfo && typeof orderInfo.totalTTC === "number" && isFinite(orderInfo.totalTTC)
+        ? orderInfo.totalTTC
+        : null;
 
     const table = el("table", { id: "pfs-table" });
     const thead = el("thead", null, [
@@ -1674,11 +1758,11 @@
     }
     table.appendChild(tbody);
 
-    const tfoot = el("tfoot", null, [
-      el("tr", null, [
+    const tfootRows = [
+      el("tr", { className: "pfs-total-ht" }, [
         (function () {
           const td = el("td");
-          td.appendChild(el("strong", { text: "Total" }));
+          td.appendChild(el("strong", { text: "Total HT" }));
           return td;
         })(),
         (function () {
@@ -1693,7 +1777,27 @@
           return td;
         })()
       ])
-    ]);
+    ];
+    // Ligne TTC affichée uniquement si la plateforme nous donne le montant —
+    // sinon on reste muet (pas de « — » bruité sur les marketplaces qui
+    // n'exposent pas le TTC via API).
+    if (platformTTC != null) {
+      const ttcCell = el("td", { className: "r" });
+      ttcCell.appendChild(el("strong", { text: fmtEuro(platformTTC) }));
+      tfootRows.push(
+        el("tr", { className: "pfs-total-ttc" }, [
+          (function () {
+            const td = el("td");
+            td.appendChild(el("strong", { text: "Total TTC (plateforme)" }));
+            return td;
+          })(),
+          el("td"),
+          el("td"),
+          ttcCell
+        ])
+      );
+    }
+    const tfoot = el("tfoot", null, tfootRows);
     table.appendChild(tfoot);
     return table;
   }
@@ -1710,7 +1814,7 @@
       };
     });
     const oldTable = document.getElementById("pfs-table");
-    const table = buildRowsTable(rows);
+    const table = buildRowsTable(rows, _currentOrderInfo);
     if (oldTable && oldTable.parentNode) {
       oldTable.parentNode.replaceChild(table, oldTable);
     } else {
@@ -1731,6 +1835,7 @@
     _secretClickCount = 0;
     const pdfBtn = document.getElementById("pfs-pdf-btn");
     const sageBtn = document.getElementById("pfs-sage-btn");
+    const eeBtn = document.getElementById("pfs-ee-btn");
 
     if (state.loading) {
       body.appendChild(el("p", { className: "pfs-info", text: "Chargement de la commande…" }));
@@ -1742,10 +1847,15 @@
       footer.style.display = "flex";
       if (pdfBtn) pdfBtn.style.display = "none";
       if (sageBtn) sageBtn.style.display = "none";
+      if (eeBtn) eeBtn.style.display = "none";
       return;
     }
     if (pdfBtn) pdfBtn.style.display = "";
     if (sageBtn) sageBtn.style.display = "";
+    // Easy-Express : visible seulement si on a au moins une adresse à proposer.
+    const hasAddress = Array.isArray(state.orderInfo && state.orderInfo.addresses)
+      && state.orderInfo.addresses.some(function (a) { return a && Array.isArray(a.fields) && a.fields.length; });
+    if (eeBtn) eeBtn.style.display = hasAddress ? "" : "none";
 
     const rows = state.rows || [];
     const orderInfo = state.orderInfo || {};
@@ -1797,10 +1907,12 @@
       body.appendChild(wrap);
     }
 
+    body.appendChild(buildVerifEntrepriseSection(orderInfo));
+
     _originalRows = rows.slice();
     _currentOrderInfo = orderInfo;
     _secretClickCount = 0;
-    body.appendChild(buildRowsTable(rows));
+    body.appendChild(buildRowsTable(rows, orderInfo));
 
     footer.style.display = "flex";
   }
@@ -1808,6 +1920,82 @@
   function hideModal() {
     const overlay = document.getElementById("pfs-modal-overlay");
     if (overlay) overlay.style.display = "none";
+  }
+
+  // ─── Easy-Express : pré-remplissage depuis l'adresse de livraison ────
+  // La commande expose orderInfo.addresses = [{ title, fields: [{label, value}] }].
+  // On cherche d'abord un bloc "livraison", à défaut on retombe sur le premier bloc
+  // (certains marketplaces — PFS, EFP — n'exposent que la facturation).
+  function eeFieldByLabel(fields, patterns) {
+    for (const f of fields || []) {
+      if (!f || !f.label) continue;
+      const label = String(f.label).toLowerCase();
+      for (const p of patterns) {
+        if (label.indexOf(p) !== -1) return (f.value == null ? "" : String(f.value).trim());
+      }
+    }
+    return "";
+  }
+
+  function eeSplitContact(contact) {
+    const parts = String(contact || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return { firstName: "", lastName: "" };
+    if (parts.length === 1) return { firstName: "", lastName: parts[0] };
+    return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
+  }
+
+  function eeExtractReceiverFromOrder(orderInfo) {
+    const addresses = (orderInfo && orderInfo.addresses) || [];
+    const livraison = addresses.find(function (a) { return a && /livraison/i.test(a.title || ""); });
+    const addr = livraison || addresses[0];
+    if (!addr) return null;
+    const fields = addr.fields || [];
+
+    const company = eeFieldByLabel(fields, ["société", "societe", "shop", "boutique"]);
+    const contact = eeFieldByLabel(fields, ["contact", "nom du contact"]);
+    const names = eeSplitContact(contact);
+
+    return {
+      firstName: names.firstName,
+      lastName: names.lastName,
+      company: company,
+      street: eeFieldByLabel(fields, ["adresse", "rue"]),
+      complement: eeFieldByLabel(fields, ["complément", "complement"]),
+      postalCode: eeFieldByLabel(fields, ["code postal", "cp"]),
+      city: eeFieldByLabel(fields, ["ville"]),
+      country: eeFieldByLabel(fields, ["pays"]) || "France",
+      phone: eeFieldByLabel(fields, ["téléphone", "telephone", "tél", "tel"]),
+      email: eeFieldByLabel(fields, ["email", "e-mail", "courriel"]),
+      sourceTitle: addr.title || ""
+    };
+  }
+
+  function openEasyExpressFromOrder() {
+    if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
+    const orderInfo = _currentOrderInfo || {};
+    const receiver = eeExtractReceiverFromOrder(orderInfo);
+    if (!receiver) {
+      alert("Aucune adresse de livraison détectée sur cette commande.");
+      return;
+    }
+    const payload = {
+      receiver: receiver,
+      orderNo: orderInfo.orderNo || "",
+      source: "order"
+    };
+    try {
+      chrome.runtime.sendMessage({ type: "OPEN_EE_FROM_ORDER", payload: payload }, function (res) {
+        if (chrome.runtime.lastError) {
+          alert("Impossible d'ouvrir le bordereau : " + chrome.runtime.lastError.message);
+          return;
+        }
+        if (!res || !res.ok) {
+          alert("Erreur : " + ((res && res.error) || "impossible d'ouvrir la fenêtre."));
+        }
+      });
+    } catch (e) {
+      alert(CONTEXT_LOST_MSG);
+    }
   }
 
   function escapeHtml(s) {
@@ -1822,6 +2010,18 @@
   function buildPrintHtml(rows, info) {
     const totalQty = rows.reduce(function (s, r) { return s + r.quantite; }, 0);
     const totalHT = rows.reduce(function (s, r) { return s + r.quantite * r.prixUnitaire; }, 0);
+    const platformTTC =
+      info && typeof info.totalTTC === "number" && isFinite(info.totalTTC)
+        ? info.totalTTC
+        : null;
+    const ttcRowHtml = platformTTC != null
+      ? '<tr class="total-ttc">'
+        + '<td><strong>Total TTC (plateforme)</strong></td>'
+        + '<td></td>'
+        + '<td></td>'
+        + '<td class="r"><strong>' + escapeHtml(fmtEuro(platformTTC)) + '</strong></td>'
+        + '</tr>'
+      : '';
 
     let addressesHtml = "";
     const addresses = Array.isArray(info.addresses) ? info.addresses : [];
@@ -1890,7 +2090,10 @@
       + 'th.r, td.r { text-align: right; font-variant-numeric: tabular-nums; }'
       + 'tr.cat-a td { background: #ffffff; }'
       + 'tr.cat-b td { background: #f3f4f6; }'
-      + 'tfoot td { border-top: 2px solid #111; border-bottom: none; padding-top: 10px; padding-bottom: 10px; font-weight: 700; background: #ffffff; font-size: 13px; }'
+      + 'tfoot td { border-top: none; border-bottom: none; padding-top: 6px; padding-bottom: 6px; font-weight: 700; background: #ffffff; font-size: 13px; }'
+      + 'tfoot tr.total-ht td { border-top: 2px solid #111; padding-top: 10px; }'
+      + 'tfoot tr.total-ttc td { padding-bottom: 10px; color: #5b6470; }'
+      + '.ttc-missing { color: #9ca3af; font-weight: 500; }'
       + '</style></head><body>'
       + '<h1>Regroupement facture — ' + escapeHtml(orderNo) + '</h1>'
       + '<p class="subtitle">' + nbLines + ' ligne' + (nbLines > 1 ? 's' : '') + ' regroupée' + (nbLines > 1 ? 's' : '') + '</p>'
@@ -1898,12 +2101,14 @@
       + '<table><thead><tr>'
       + '<th>Catégorie</th><th class="r">Quantité</th><th>Prix unitaire</th><th class="r">Sous-total HT</th>'
       + '</tr></thead><tbody>' + rowsHtml + '</tbody>'
-      + '<tfoot><tr>'
-      + '<td><strong>Total</strong></td>'
+      + '<tfoot><tr class="total-ht">'
+      + '<td><strong>Total HT</strong></td>'
       + '<td class="r"><strong>' + totalQty + '</strong></td>'
       + '<td></td>'
       + '<td class="r"><strong>' + escapeHtml(fmtEuro(totalHT)) + '</strong></td>'
-      + '</tr></tfoot></table></body></html>';
+      + '</tr>'
+      + ttcRowHtml
+      + '</tfoot></table></body></html>';
   }
 
   // ---- Export CSV Sage 50 ----
@@ -2470,5 +2675,323 @@
       }
       setTimeout(cleanup, 60000);
     }, 200);
+  }
+
+  // =========================================================================
+  // Vérification entreprise via l'annuaire INSEE / recherche-entreprises
+  // -------------------------------------------------------------------------
+  // Entreprises FRANÇAISES uniquement. Le SIRET/TVA sont parfois présents
+  // sur l'un sans l'autre : l'annuaire permet de reconstituer la pièce
+  // manquante (TVA ⇄ SIRET) et de confirmer la raison sociale + l'adresse
+  // du siège. Si rien n'est détecté dans la commande, deux champs libres
+  // laissent la main à l'utilisateur (facultatif).
+  // =========================================================================
+
+  function normalizeDigits(s) {
+    return String(s || "").replace(/\D/g, "");
+  }
+
+  function normalizeTvaFr(raw) {
+    const cleaned = String(raw || "").replace(/\s+/g, "").toUpperCase();
+    if (!cleaned) return null;
+    if (!cleaned.startsWith("FR")) return null;
+    const rest = cleaned.slice(2);
+    if (rest.length !== 11) return null;
+    if (!/^[0-9A-HJ-NP-Z]{2}\d{9}$/.test(rest)) return null;
+    return "FR" + rest;
+  }
+
+  function sirenFromTvaFr(raw) {
+    const tva = normalizeTvaFr(raw);
+    return tva ? tva.slice(-9) : null;
+  }
+
+  // Luhn standard — l'exception La Poste (SIRETs 356000000…) utilise la
+  // somme des chiffres modulo 5. On accepte les deux ; on reste tolérant
+  // sinon et on laisse l'annuaire trancher si la validation locale échoue.
+  function isValidSiret(siret) {
+    if (!/^\d{14}$/.test(siret)) return false;
+    if (siret.startsWith("356000000")) {
+      let sum = 0;
+      for (let i = 0; i < 14; i++) sum += parseInt(siret[i], 10);
+      return sum % 5 === 0;
+    }
+    let sum = 0;
+    for (let i = 0; i < 14; i++) {
+      let d = parseInt(siret[13 - i], 10);
+      if (i % 2 === 1) {
+        d *= 2;
+        if (d > 9) d -= 9;
+      }
+      sum += d;
+    }
+    return sum % 10 === 0;
+  }
+
+  // Scanne orderInfo.addresses pour détecter des champs SIRET / TVA.
+  // Pour TVA : accepte uniquement les formats français (FR + 11 chars).
+  // Pour SIRET : accepte 14 chiffres (ignore les séparateurs).
+  function extractSiretTvaFromOrderInfo(orderInfo) {
+    const found = { siret: "", tva: "", isFrench: false };
+    if (!orderInfo || !Array.isArray(orderInfo.addresses)) return found;
+    const countryHints = [];
+    for (const block of orderInfo.addresses) {
+      const fields = (block && block.fields) || [];
+      for (const f of fields) {
+        if (!f || !f.label) continue;
+        const label = String(f.label).toLowerCase();
+        const value = String(f.value || "");
+        if (!found.siret && /siret/.test(label)) {
+          const digits = normalizeDigits(value);
+          if (digits.length === 14) found.siret = digits;
+        }
+        if (!found.tva && /tva/.test(label)) {
+          const tva = normalizeTvaFr(value);
+          if (tva) found.tva = tva;
+        }
+        if (/pays/.test(label)) countryHints.push(value.toLowerCase());
+      }
+    }
+    found.isFrench =
+      !!found.siret ||
+      !!found.tva ||
+      countryHints.some(function (c) { return /\bfrance\b|^fr$/i.test(c); });
+    return found;
+  }
+
+  function callAnnuaire(query, kind) {
+    if (!isExtensionContextAlive()) {
+      return Promise.reject(new Error("Extension rechargée — rechargez la page (F5)."));
+    }
+    return new Promise(function (resolve, reject) {
+      try {
+        chrome.runtime.sendMessage(
+          { type: "ANNUAIRE_LOOKUP", query: query, kind: kind },
+          function (resp) {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+              return;
+            }
+            if (!resp || !resp.ok) {
+              reject(new Error((resp && resp.error) || "Annuaire indisponible."));
+              return;
+            }
+            resolve(resp.data || { found: false });
+          }
+        );
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  function buildVerifEntrepriseSection(orderInfo) {
+    const detected = extractSiretTvaFromOrderInfo(orderInfo);
+
+    const box = el("section", { className: "pfs-verif-box" });
+    box.appendChild(el("h3", { className: "pfs-verif-title", text: "Vérification entreprise (Annuaire INSEE)" }));
+
+    const hint = el("p", { className: "pfs-verif-hint" });
+    hint.textContent = detected.siret || detected.tva
+      ? "Pièce détectée dans la commande — interrogation de l'annuaire en cours…"
+      : "Aucun SIRET ni n° TVA français détecté. Saisis-les manuellement si besoin.";
+    box.appendChild(hint);
+
+    const form = el("div", { className: "pfs-verif-form" });
+    const siretInput = el("input", {
+      type: "text",
+      className: "pfs-verif-input",
+      placeholder: "SIRET (14 chiffres)",
+      autocomplete: "off",
+      spellcheck: "false"
+    });
+    siretInput.value = detected.siret || "";
+    const tvaInput = el("input", {
+      type: "text",
+      className: "pfs-verif-input",
+      placeholder: "N° TVA (ex. FR12123456789)",
+      autocomplete: "off",
+      spellcheck: "false"
+    });
+    tvaInput.value = detected.tva || "";
+    const btn = el("button", {
+      type: "button",
+      className: "pfs-verif-btn",
+      text: "Vérifier"
+    });
+
+    form.appendChild(el("label", { className: "pfs-verif-label", text: "SIRET" }));
+    form.appendChild(siretInput);
+    form.appendChild(el("label", { className: "pfs-verif-label", text: "N° TVA" }));
+    form.appendChild(tvaInput);
+    form.appendChild(btn);
+    box.appendChild(form);
+
+    const result = el("div", { className: "pfs-verif-result" });
+    box.appendChild(result);
+
+    function setStatus(className, text) {
+      while (result.firstChild) result.removeChild(result.firstChild);
+      result.appendChild(el("p", { className: className, text: text }));
+    }
+
+    function clearResult() {
+      while (result.firstChild) result.removeChild(result.firstChild);
+    }
+
+    function renderResult(data, warnings) {
+      clearResult();
+      if (!data || !data.found) {
+        const msg = (data && data.reason) || "Aucune entreprise trouvée pour cette référence.";
+        result.appendChild(el("p", { className: "pfs-verif-empty", text: msg }));
+        return;
+      }
+      const grid = el("dl", { className: "pfs-verif-grid" });
+
+      function addRow(label, value, mono) {
+        if (!value) return;
+        const row = el("div", { className: "pfs-verif-row" + (mono ? " pfs-verif-mono" : "") });
+        row.appendChild(el("dt", { text: label + " :" }));
+        row.appendChild(el("dd", { text: value }));
+        row.appendChild(makeCopyButton(value));
+        grid.appendChild(row);
+      }
+
+      const denomination = (data.denomination || "").toLocaleUpperCase("fr-FR");
+      addRow("Dénomination", denomination, false);
+      const adresseFull = [data.adresse, [data.codePostal, data.commune].filter(Boolean).join(" ")]
+        .filter(Boolean)
+        .join(", ")
+        .toLocaleUpperCase("fr-FR");
+      addRow("Adresse siège", adresseFull, false);
+      addRow("SIRET siège", data.siret || "", true);
+      addRow("SIREN", data.siren || "", true);
+      addRow("N° TVA", data.tva || "", true);
+      if (data.activiteLibelle) {
+        const act = data.activiteCode
+          ? data.activiteLibelle + " (" + data.activiteCode + ")"
+          : data.activiteLibelle;
+        addRow("Activité", act, false);
+      }
+      if (data.etatAdministratif) {
+        const etatLabel = data.etatAdministratif === "A"
+          ? "Active"
+          : data.etatAdministratif === "F"
+          ? "Fermée (cessée)"
+          : String(data.etatAdministratif);
+        const row = el("div", { className: "pfs-verif-row" });
+        row.appendChild(el("dt", { text: "État :" }));
+        const dd = el("dd");
+        const badge = el("span", {
+          className: data.etatAdministratif === "A" ? "pfs-verif-badge-ok" : "pfs-verif-badge-ko",
+          text: etatLabel
+        });
+        dd.appendChild(badge);
+        row.appendChild(dd);
+        grid.appendChild(row);
+      }
+      result.appendChild(grid);
+
+      if (warnings && warnings.length) {
+        for (const w of warnings) {
+          const cls = w && w.level === "alert" ? "pfs-verif-alert" : "pfs-verif-warn";
+          result.appendChild(el("p", { className: cls, text: w && w.text ? w.text : String(w) }));
+        }
+      }
+    }
+
+    function runLookup(siretRaw, tvaRaw) {
+      const siretDigits = normalizeDigits(siretRaw);
+      const tvaNorm = normalizeTvaFr(tvaRaw);
+      const warnings = [];
+
+      let query = "";
+      let kind = "";
+
+      if (siretDigits.length === 14) {
+        if (!isValidSiret(siretDigits)) {
+          warnings.push({ level: "warn", text: "Clé SIRET invalide (Luhn) — recherche lancée malgré tout." });
+        }
+        query = siretDigits;
+        kind = "siret";
+      } else if (tvaNorm) {
+        const siren = sirenFromTvaFr(tvaNorm);
+        if (!siren) {
+          setStatus("pfs-verif-error", "N° TVA français invalide.");
+          return;
+        }
+        query = siren;
+        kind = "siren";
+      } else {
+        setStatus("pfs-verif-error", "Saisissez un SIRET (14 chiffres) ou un n° TVA français (FR + 11 caractères).");
+        return;
+      }
+
+      // Croisement local SIRET ⇄ TVA : si les deux sont fournis, le SIREN
+      // extrait du SIRET (9 premiers chiffres) doit correspondre à celui
+      // du n° TVA (9 derniers chars). On alerte avant même l'annuaire.
+      if (siretDigits.length === 14 && tvaNorm) {
+        const sirenFromSiret = siretDigits.slice(0, 9);
+        const sirenFromTva = sirenFromTvaFr(tvaNorm);
+        if (sirenFromSiret !== sirenFromTva) {
+          warnings.push({
+            level: "alert",
+            text: "⚠ Incohérence : le SIRET (" + siretDigits + ") et le n° TVA (" + tvaNorm + ") n'appartiennent pas à la même entreprise (SIREN différent)."
+          });
+        }
+      }
+
+      setStatus("pfs-verif-loading", "Interrogation de l'annuaire…");
+
+      callAnnuaire(query, kind)
+        .then(function (data) {
+          if (data && data.found) {
+            // TVA saisi ⇄ TVA recalculée depuis l'annuaire
+            if (tvaNorm && data.tva && data.tva !== tvaNorm) {
+              warnings.push({
+                level: "alert",
+                text: "⚠ Le n° TVA saisi (" + tvaNorm + ") ne correspond pas à celui de l'annuaire (" + data.tva + ")."
+              });
+            }
+            // SIRET saisi ⇄ SIRET renvoyé par l'annuaire
+            if (siretDigits.length === 14 && data.siret && data.siret !== siretDigits) {
+              const sirenFromSiret = siretDigits.slice(0, 9);
+              if (data.siren && sirenFromSiret === data.siren) {
+                warnings.push({
+                  level: "warn",
+                  text: "Le SIRET saisi correspond à un établissement secondaire — siège : " + data.siret + "."
+                });
+              } else {
+                warnings.push({
+                  level: "alert",
+                  text: "⚠ Le SIRET saisi (" + siretDigits + ") ne correspond pas à l'entreprise trouvée dans l'annuaire (SIRET siège : " + data.siret + ")."
+                });
+              }
+            }
+          }
+          renderResult(data, warnings);
+        })
+        .catch(function (err) {
+          setStatus("pfs-verif-error", "Erreur : " + ((err && err.message) || err));
+        });
+    }
+
+    btn.addEventListener("click", function () {
+      runLookup(siretInput.value, tvaInput.value);
+    });
+    [siretInput, tvaInput].forEach(function (inp) {
+      inp.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          runLookup(siretInput.value, tvaInput.value);
+        }
+      });
+    });
+
+    if (detected.siret || detected.tva) {
+      setTimeout(function () { runLookup(detected.siret, detected.tva); }, 0);
+    }
+
+    return box;
   }
 })();

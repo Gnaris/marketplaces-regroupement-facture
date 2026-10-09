@@ -65,13 +65,24 @@ All nine parsers normalize into the same shape consumed by `showModal`:
 { rows: [{ categorie, prixUnitaire, quantite }, ...],
   orderInfo: {
     orderNo,
-    totalVerif,
+    totalTTC,   // montant TTC fourni par la plateforme, OU null si non exposé
     addresses: [
       { title: "Adresse de livraison" | "Adresse de facturation",
         fields: [{ label, value }, ...] }
     ]
   } }
 ```
+
+The modal shows two lines in the table footer: **Total HT** (sum of `qty × prixUnitaire` across rows, computed locally) and **Total TTC (plateforme)** (from `orderInfo.totalTTC`). The TTC is **never computed client-side** (orders can be VAT-exempt, under reverse-charge, at a reduced rate, or at the standard 20%): if the platform doesn't expose it, the cell renders as `—` with a hover tooltip explaining why. Per-site TTC source (3.20.0):
+- `pfs`: `order.summary.total_incl_tax` (field name is explicit).
+- `efp`: **null** — the GraphQL `EFP_QUERY` currently only asks for `montantApresRemise` (HT). Extend the query with the correct TTC field name once the Efashion-Paris schema is confirmed.
+- `aks`: defensive candidates on `data.attributes.*` (`totalIncludingTaxes` / `totalInclTax` / `grandTotal` / `total`), each a `{amount, currency}` cents object. Falls through to null if none match.
+- `mc`: `doc.total_price` (string → parseFloat), fallback `doc.total_amount` / `doc.pay_price`. Observed as TTC in European retailer orders.
+- `faire`: defensive — Faire B2B is HT (retailer self-liquidates VAT), so `totalTTC` is usually null; defensive lookup on `json.total_incl_tax` / `json.order_total` / `brand_order.total_amount` in case a locale ever exposes TTC.
+- `shopify`: `order.currentTotalPriceSet` (post-refund) preferred, falling back to `order.totalPriceSet`. Added to `SHOPIFY_QUERY` in `background.js`.
+- `bj` / `issyma`: **null** — the `/api/admin/commandes/{id}/regroup` endpoint currently only returns `subtotalHT`. Extend `app/api/admin/commandes/[id]/regroup/route.ts` to also return `totalTTC` to show it here.
+- `bm`: `data.totalTTC` directly from the API.
+- `oc`: DOM scrape of the totals table. First looks for an explicit `Total TTC` / `Total incl.` label (case-insensitive), falls back to the generic `Total` row (which on Orderchamp is the final retailer-facing total, i.e. TTC).
 
 Rows are merged via `addRow(map, cat, price, qty)` using the key `cat + "||" + price.toFixed(4)` — so two lines with the same category but a 0.0001 € price difference become two rows. If you change rounding here, also change it everywhere prices are read.
 
@@ -130,6 +141,49 @@ Per-site `meta` capture — **HAR-verified** for pfs / efp / mc (August 2026 cap
 The secret-factor multiplier applies to this export exactly like the PDF one. Default client (`SAGE_CLIENT_CODE = "003"` — the generic client in the user's Sage dossier; must exist there or Sage rejects the piece with "La valeur de la rubrique 'Client' est incorrecte") and VAT (`SAGE_TVA_RATE = "20,00"`) are constants in content.js.
 
 Feature history (August 2026): 3.14.0 button + 9-column CSV; 3.15.0 resolution pipeline, picker, `storage` permission, `SAGE_LOOKUP_REFS`; 3.15.1 HAR-verified refs (pfs/efp/mc) + EFP_QUERY fields; 3.15.2 shop-first resolution + garnished-display→LOT rules; 3.15.3 client 003; 3.15.4 Description column (Lg Description); 3.16.0 one L line per ref + per-color breakdown; 3.16.1 cp1252 encoding + French capitalized colors; 3.16.2 RTF descriptions (bold ref, `\line` per color); 3.16.3 Faire clean ref (`split("_")[0].toUpperCase()`) + billing block enriched with legal entity fields (SIRET, N° TVA, nom légal, email, téléphone); 3.16.5 Faire live-verified — UGS on `item.brand_code` (not `item.sku`), color on `item.style_name`, image on `item.image.url`; 3.17.0 Faire endpoint URL fix (`/api/crm/brands/customer-details` — new path), billing block uses shipping address as fallback (no separate `retailer_details.address`), all address values displayed & copied in French uppercase across every marketplace; 3.17.1 Pochon → ART0017 (partage code Sage avec Sac), Description RTF utilise la vraie catégorie du produit (pas le libellé Sage) donc « POCHON » s'affiche bien même sur ART0017, `parseBj` lit ref/couleur/nom/image défensivement (endpoint /regroup doit exposer ces champs); 3.17.2 exception jonc — la catégorie boutique BJ (« Bracelet ») et `normalizeFaireCategory` (jonc → « Bracelet ») masquent les joncs, qui ont pourtant un article Sage distinct (ART0016) ; deux garde-fous ajoutés dans le pipeline de résolution (miroir de l'exception ART0013 → LOT) : (1) après lookup boutique, si `it.code === "ART0002"` et le nom résolu produit ART0016, on remplace + `it.bjCategory = "Bracelet jonc"` pour que la description RTF affiche « BRACELET JONC » ; (2) après le repli local, si `it.code === "ART0002"` et `/joncs?/i` matche le nom, on force ART0016; 3.18.0 support Issyma — nouveau code site `issyma` (issyma.fr / www.issyma.fr, second tenant sur la même app Next.js que Beli & Jolie), même endpoint `/api/admin/commandes/{id}/regroup` (résolu par host côté serveur), routage vers `parseBj` inchangé ; lookup Sage boutique (`SAGE_LOOKUP_REFS` → `/api/public/products`) explicitement sauté pour Issuma — l'endpoint public est scopé au tenant beliandjolie et les collisions de référence donneraient une fausse catégorie.
+
+## Easy-Express (raccourci bordereau d'expédition)
+
+Depuis 3.21.0 l'extension expose un **popup** (icône dans la barre Chrome) et une **page options** pour générer un bordereau Easy-Express sans sortir du navigateur. 3.22.0 branche le popup sur le modal de regroupement : un bouton « Bordereau Easy-Express » dans le footer ouvre le popup pré-rempli avec l'adresse de livraison de la commande.
+
+**Fichiers** : `popup.html` + `popup.js` + `popup.css` (icône action) ; `options.html` + `options.js` + `options.css` (`options_ui.open_in_tab: true`). Handlers service worker dans `background.js` : `EE_RATES`, `EE_CHECKOUT`, `EE_VALIDATE_KEY`, `OPEN_EE_FROM_ORDER`, `ANNUAIRE_LOOKUP`.
+
+**Stockage** (`chrome.storage.sync`) :
+- `easyExpressToken` : jeton Bearer récupéré sur `easy-express.fr/membre/me → Afficher mon AccessToken`.
+- `easyExpressSender` : `{company, shopName, siret, email, phone, street, complement, postalCode, city, country}`. Pré-rempli par défaut avec Beli & Jolie (90 rue de la Haie Coq, 93300 Aubervilliers, 07 82 75 81 58) à la première ouverture des options.
+- Brouillon destinataire du popup dans `chrome.storage.local[eeDraftReceiver]` (persiste entre deux ouvertures tant qu'un bordereau n'a pas été généré).
+- `chrome.storage.local[eePrefill]` : payload temporaire déposé par le service worker juste avant d'ouvrir une fenêtre popup depuis le modal, consommé puis effacé au premier `init()` du popup.
+
+**API Easy-Express** (doc `/storage/file/download/v3.html`, base `https://easy-express.fr`) :
+- Validation du jeton : ping `POST /api/v3/shipments/rates` (FR 75001 → FR 75002, 1 kg). 401/403 = refusé. HTTP 200 (quel que soit `Response.Code`) = accepté — on considère qu'un code applicatif non-200 vient de l'adresse, pas du jeton.
+- Cotation : `POST /api/v3/shipments/rates` → `Response.Message = { transactionId, carriers: [{id, code, name, logo, price, priceIncTax, infos: {estimatedArrival, maximumSizeSupported, storageLocation}}] }`. `price` et `priceIncTax` sont en **centimes HT / TTC** (÷100 avant affichage). Si `priceIncTax` est absent le TTC est recalculé à `priceHT × 1.2`.
+- Création : `POST /api/v3/shipments/checkout` avec `transactionId` + `carrierId` + `shipmentRequest.{parcels, senderAddress, receiverAddress}`. Retour : `Response.Message = { labels, parcels: [{tracking, ticket}] }`. On préfère `message.labels` (PDF combiné de tous les colis) puis `parcels[0].ticket`. Le PDF s'ouvre automatiquement dans un nouvel onglet (`chrome.tabs.create`).
+
+**Poids > 25 kg** : auto-split via `eeSplitParcels` (plafond unique à 25 kg pour rester compatible FedEx/UPS 25, Chrono/GLS/DPD 30, Colissimo Inter 20). Code identique à `lib/easy-express.ts` côté Beli & Jolie.
+
+**Pays** : `eeCountryToCode` convertit un nom FR courant (France, Belgique, Suisse…) ou un code ISO 2 lettres en code ISO. Fallback silencieux à `FR` si inconnu (comportement voulu — Easy-Express renverra une erreur explicite si le code n'est pas supporté pour la cotation).
+
+**Affichage prix côté popup** :
+1. HT = `price / 100`, TTC = `priceIncTax / 100`. Toujours affichés.
+2. Assurance : **la cotation Easy-Express v3 ne contient aucun champ assurance** (vérifié sur doc v3). Zéro calcul côté extension — `eeExtractInsuranceTTC` cherche défensivement `priceWithInsurance` / `priceInsurance` / `insurancePrice` / `priceIncTaxWithInsurance` / `priceTTCInsurance` (racine carrier ou sous `infos`), au cas où Easy-Express enrichirait la réponse. **Rien affiché si le champ n'existe pas** (choix cliente 3.22.0 : plus de calcul ad valorem configurable — « Je ne sais pas à quoi il sert »).
+3. Réduction : la doc v3 ne liste pas de champ promo/discount. `eeExtractDiscount` cherche défensivement `discount`/`promo`/`promotion`/`reduction`/`originalPrice`/`basePrice`/`publicPrice` (racine carrier **ou** sous `infos`). Si trouvé et `> priceHT`, un badge vert « Réduction : -X,XX € » apparaît, avec le prix public en tooltip. Jamais vu live au 2026-10-09, à surveiller si Easy-Express enrichit sa réponse.
+
+**Flux « depuis une commande marketplace »** (3.22.0) :
+1. L'utilisateur clique sur « Regrouper la facture », le modal s'affiche avec `orderInfo.addresses`.
+2. Dans le footer du modal, le bouton `#pfs-ee-btn` apparaît si au moins une adresse non vide est présente (sinon masqué). Il est stylé en noir plein (vs. blanc des exports) pour qu'il saute aux yeux.
+3. Clic → `openEasyExpressFromOrder()` dans `content.js` : extrait les champs du **premier bloc dont le titre contient « livraison »** (sinon premier bloc disponible, utile pour PFS/EFP qui n'exposent que la facturation), via `eeFieldByLabel(fields, patterns)` qui cherche `"société"`/`"adresse"`/`"code postal"`/`"ville"`/`"pays"`/`"téléphone"`/`"email"`/`"contact"` dans les labels (insensible à la casse, `.indexOf` donc partial match toléré). Nom séparé via `eeSplitContact` (premier mot → firstName, reste → lastName).
+4. `chrome.runtime.sendMessage({ type: "OPEN_EE_FROM_ORDER", payload: { receiver, orderNo, source: "order" } })` → service worker.
+5. Service worker : `openEasyExpressFromOrder(payload)` stocke le payload dans `chrome.storage.local[eePrefill]` puis `chrome.windows.create({ url: "popup.html?from=order", type: "popup", width: 460, height: 760 })`. **Pas de permission `windows` nécessaire** — `chrome.windows.create` est accessible sans déclaration MV3.
+6. La fenêtre popup s'ouvre, `popup.js::init()` détecte `?from=order`, charge `eePrefill`, remplit les champs via `fillReceiver(r)`, appelle `flagMissingFields()` (ajoute la classe `.needs-review` fond jaune pâle sur `r_street`/`r_postalCode`/`r_city`/`r_country` et sur `r_lastName`+`r_company` si les deux sont vides) et affiche la bannière `#prefillBanner` :
+   - Variante orange (défaut) si des champs manquent : « Pré-rempli depuis la commande "N°" — Champs à compléter : adresse, code postal, … ».
+   - Variante verte (`.ok`) si tout est présent : « Toutes les informations livraison semblent complètes. Vérifiez puis calculez les tarifs. »
+7. Le flag `.needs-review` tombe au premier `input` sur le champ. Après remplissage, `eePrefill` est effacé pour que la prochaine ouverture reparte propre.
+
+**Annuaire des entreprises** (`https://recherche-entreprises.api.gouv.fr/search`) : API publique DINUM sans auth. `annuaireLookup(query, kind)` prend un SIRET (14 chiffres) ou un SIREN (9), renvoie `{found, siren, siret, denomination, adresse, codePostal, commune, adresseLigne, etatAdministratif, activiteCode, activiteLibelle, tva}`. `tvaFromSiren` calcule la clé INSEE `((12 + 3*(SIREN mod 97)) mod 97)` pour reconstituer le n° de TVA intracommunautaire. Utilisé dans options (pré-remplir l'expéditeur) **et** dans le popup (pré-remplir le destinataire B2B).
+
+**Sécurité DOM** : popup rendu via le helper local `el(tag, props, children)` — jamais d'`innerHTML` (hook de sécurité du dev env le bloquerait, cf. note `modal.css` plus haut).
+
+**Point de vigilance refactor** : si la doc Easy-Express v3 évolue et renomme `price` → `priceExTax` (ou similaire), seule `easyExpressRates` dans `background.js` est à modifier (la lib Beli & Jolie côté serveur fait pareil mais dans un codebase séparé — ne pas supposer que les deux restent synchrones).
 
 ### Hidden behavior (Easter egg)
 

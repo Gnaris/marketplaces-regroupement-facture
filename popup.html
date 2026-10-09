@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Easy-Express — Bordereau</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="pop-head">
+    <div>
+      <h1>Easy-Express</h1>
+      <p class="sub">Génération rapide de bordereau</p>
+    </div>
+    <button id="openOptions" type="button" class="iconbtn" title="Paramètres">⚙</button>
+  </header>
+
+  <main>
+    <!-- Bannière de pré-remplissage depuis une commande -->
+    <aside id="prefillBanner" class="banner hidden">
+      <div class="banner-icon">↩</div>
+      <div class="banner-body">
+        <div id="prefillTitle" class="banner-title">Pré-rempli depuis une commande</div>
+        <div id="prefillMsg" class="banner-msg">Vérifiez les champs ci-dessous puis générez le bordereau.</div>
+      </div>
+    </aside>
+
+    <!-- Étape 1 : Formulaire destinataire + colis -->
+    <section id="step1" class="step">
+      <div class="section-head">
+        <h2>Destinataire</h2>
+        <div class="siret-mini">
+          <input id="r_siretLookup" type="text" inputmode="numeric" placeholder="SIRET (auto-remplir)" maxlength="14" />
+          <button id="r_siretBtn" type="button" class="secondary small">↓</button>
+        </div>
+      </div>
+      <div id="r_siretStatus" class="status muted small"></div>
+
+      <div class="grid">
+        <label>Prénom
+          <input id="r_firstName" type="text" />
+        </label>
+        <label>Nom
+          <input id="r_lastName" type="text" />
+        </label>
+        <label class="span-2">Société (optionnel)
+          <input id="r_company" type="text" />
+        </label>
+        <label class="span-2">Adresse (n° + rue)
+          <input id="r_street" type="text" />
+        </label>
+        <label class="span-2">Complément (optionnel)
+          <input id="r_complement" type="text" />
+        </label>
+        <label>Code postal
+          <input id="r_postalCode" type="text" />
+        </label>
+        <label>Ville
+          <input id="r_city" type="text" />
+        </label>
+        <label>Pays
+          <input id="r_country" type="text" value="France" />
+        </label>
+        <label>Téléphone
+          <input id="r_phone" type="tel" />
+        </label>
+        <label class="span-2">Email
+          <input id="r_email" type="email" />
+        </label>
+      </div>
+
+      <h2 class="mt">Colis</h2>
+      <div class="grid">
+        <label class="span-2">Poids total (kg)
+          <input id="p_weight" type="number" step="0.1" min="0.1" value="1" />
+        </label>
+        <label class="span-2">Instructions livreur (optionnel)
+          <input id="p_instructions" type="text" placeholder="Ex. laisser chez le gardien" />
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="getRates" type="button" class="primary">Calculer les tarifs</button>
+        <span id="step1Status" class="status muted"></span>
+      </div>
+    </section>
+
+    <!-- Étape 2 : Liste transporteurs -->
+    <section id="step2" class="step hidden">
+      <div class="section-head">
+        <h2>Choisissez un transporteur</h2>
+        <button id="backStep1" type="button" class="link">← Modifier</button>
+      </div>
+      <div id="ratesMeta" class="muted small"></div>
+      <ul id="carriers" class="carriers"></ul>
+
+      <div class="actions">
+        <button id="checkout" type="button" class="primary" disabled>Générer le bordereau</button>
+        <span id="step2Status" class="status muted"></span>
+      </div>
+    </section>
+
+    <!-- Étape 3 : Résultat (lien PDF) -->
+    <section id="step3" class="step hidden">
+      <div class="done-icon">✓</div>
+      <h2>Bordereau prêt</h2>
+      <p id="trackingBlock" class="muted"></p>
+      <div class="actions column">
+        <a id="openLabel" class="primary btn" target="_blank" rel="noopener">Ouvrir le PDF</a>
+        <button id="newShipment" type="button" class="secondary">Nouveau bordereau</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

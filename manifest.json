@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.18.0",
+  "version": "3.22.0",
   "permissions": ["storage"],
-  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères + Issyma.",
+  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères + Issyma. Génère aussi des bordereaux Easy-Express.",
   "host_permissions": [
     "https://wholesaler.parisfashionshops.com/*",
     "https://wholesaler-api.parisfashionshops.com/*",
@@ -21,8 +21,18 @@
     "https://server.bijouxmysteres.fr/*",
     "https://issyma.fr/*",
     "https://www.issyma.fr/*",
+    "https://easy-express.fr/*",
+    "https://recherche-entreprises.api.gouv.fr/*",
     "http://localhost:3000/*"
   ],
+  "action": {
+    "default_title": "Easy-Express — Générer un bordereau",
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "background": {
     "service_worker": "background.js"
   },

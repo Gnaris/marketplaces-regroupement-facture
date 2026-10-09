@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>Options — Easy-Express</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <h1>Easy-Express</h1>
+      <p class="sub">Paramètres du bordereau d'expédition rapide.</p>
+    </header>
+
+    <section class="card">
+      <h2>Clé API (jeton d'accès)</h2>
+      <p class="hint">
+        Rendez-vous sur
+        <a href="https://easy-express.fr/membre/me" target="_blank" rel="noopener">easy-express.fr/membre/me</a>,
+        cliquez sur « Afficher mon jeton d'accès (AccessToken) », puis collez-le ci-dessous.
+      </p>
+
+      <div class="row">
+        <input id="token" type="password" placeholder="Coller la clé API Easy-Express" autocomplete="off" />
+        <button id="toggleToken" type="button" class="ghost" title="Afficher / masquer">👁</button>
+      </div>
+
+      <div class="row">
+        <button id="validateToken" type="button" class="secondary">Vérifier</button>
+        <span id="tokenStatus" class="status muted">Non vérifié</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Expéditeur (adresse figée sur chaque bordereau)</h2>
+      <p class="hint">
+        Vous pouvez pré-remplir ces champs depuis un SIRET (API publique
+        <code>recherche-entreprises.api.gouv.fr</code>).
+      </p>
+
+      <div class="row">
+        <input id="siretLookup" type="text" inputmode="numeric" placeholder="SIRET (14 chiffres)" maxlength="14" />
+        <button id="siretBtn" type="button" class="secondary">Rechercher</button>
+        <span id="siretStatus" class="status muted"></span>
+      </div>
+
+      <div class="grid">
+        <label>Société
+          <input id="s_company" type="text" placeholder="Raison sociale" />
+        </label>
+        <label>Enseigne (shopName)
+          <input id="s_shopName" type="text" placeholder="Ma boutique" />
+        </label>
+        <label>SIRET
+          <input id="s_siret" type="text" inputmode="numeric" />
+        </label>
+        <label>Email
+          <input id="s_email" type="email" />
+        </label>
+        <label>Téléphone
+          <input id="s_phone" type="tel" />
+        </label>
+        <label class="span-2">Rue (n° + voie)
+          <input id="s_street" type="text" />
+        </label>
+        <label class="span-2">Complément d'adresse
+          <input id="s_complement" type="text" />
+        </label>
+        <label>Code postal
+          <input id="s_postalCode" type="text" />
+        </label>
+        <label>Ville
+          <input id="s_city" type="text" />
+        </label>
+        <label>Pays
+          <input id="s_country" type="text" value="France" />
+        </label>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button id="save" type="button" class="primary">Enregistrer</button>
+      <span id="saveStatus" class="status muted"></span>
+    </div>
+  </main>
+
+  <script src="options.js"></script>
+</body>
+</html>

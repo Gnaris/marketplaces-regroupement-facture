@@ -104,7 +104,8 @@
 }
 
 #pfs-pdf-btn,
-#pfs-sage-btn {
+#pfs-sage-btn,
+#pfs-ee-btn {
   background: #fff;
   color: #111;
   border: 1px solid #d1d5db;
@@ -113,12 +114,24 @@
   font-size: 16px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 #pfs-pdf-btn:hover,
-#pfs-sage-btn:hover {
+#pfs-sage-btn:hover,
+#pfs-ee-btn:hover {
   background: #f3f4f6;
   border-color: #9ca3af;
+}
+/* Easy-Express : accentué pour qu'il saute aux yeux à côté des exports. */
+#pfs-ee-btn {
+  background: #111;
+  color: #fff;
+  border-color: #111;
+}
+#pfs-ee-btn:hover {
+  background: #2a2a2a;
+  border-color: #2a2a2a;
+  color: #fff;
 }
 
 #pfs-img-strip {
@@ -185,12 +198,25 @@
   background: #f3f4f6;
 }
 #pfs-table tfoot td {
-  border-top: 2px solid #111;
+  border-top: none;
   border-bottom: none;
-  padding-top: 16px;
-  padding-bottom: 16px;
+  padding-top: 8px;
+  padding-bottom: 8px;
   font-size: 18px;
   background: #ffffff;
+}
+#pfs-table tfoot tr.pfs-total-ht td {
+  border-top: 2px solid #111;
+  padding-top: 16px;
+}
+#pfs-table tfoot tr.pfs-total-ttc td {
+  padding-bottom: 16px;
+  color: #5b6470;
+}
+#pfs-table .pfs-ttc-missing {
+  color: #9ca3af;
+  font-weight: 500;
+  cursor: help;
 }
 #pfs-table tfoot strong {
   font-size: 18px;
@@ -415,4 +441,178 @@
   border-radius: 10px;
   font-size: 15px;
   margin: 16px 0 4px;
+}
+
+/* ---- Vérification entreprise (annuaire INSEE) ---- */
+.pfs-verif-box {
+  margin: 0 0 24px;
+  padding: 16px 20px 18px;
+  background: #f5f8ff;
+  border: 1px solid #dbe4f7;
+  border-radius: 14px;
+}
+.pfs-verif-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1d4ed8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.pfs-verif-hint {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  color: #475569;
+  line-height: 1.45;
+}
+.pfs-verif-form {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr auto;
+  gap: 8px 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.pfs-verif-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #4b5563;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pfs-verif-input {
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #fff;
+  color: #111;
+  min-width: 0;
+}
+.pfs-verif-input:focus {
+  outline: none;
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.15);
+}
+.pfs-verif-btn {
+  background: #1d4ed8;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.pfs-verif-btn:hover {
+  background: #1e40af;
+}
+.pfs-verif-result {
+  margin-top: 10px;
+}
+.pfs-verif-loading,
+.pfs-verif-empty {
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  color: #475569;
+  font-style: italic;
+}
+.pfs-verif-error {
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.pfs-verif-warn {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.pfs-verif-alert {
+  margin: 8px 0 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.pfs-verif-grid {
+  margin: 0;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  display: block;
+}
+.pfs-verif-row {
+  display: grid;
+  grid-template-columns: 140px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px dashed #f1f5f9;
+}
+.pfs-verif-row:last-child {
+  border-bottom: none;
+}
+.pfs-verif-row dt {
+  margin: 0;
+  font-weight: 600;
+  color: #4b5563;
+  font-size: 13.5px;
+}
+.pfs-verif-row dd {
+  margin: 0;
+  color: #111;
+  word-break: break-word;
+  min-width: 0;
+}
+.pfs-verif-row.pfs-verif-mono dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.02em;
+}
+.pfs-verif-badge-ok {
+  display: inline-block;
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.pfs-verif-badge-ko {
+  display: inline-block;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .pfs-verif-form {
+    grid-template-columns: auto 1fr;
+  }
+  .pfs-verif-btn {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+  .pfs-verif-row {
+    grid-template-columns: 1fr auto;
+  }
+  .pfs-verif-row dt {
+    grid-column: 1 / -1;
+  }
 }
