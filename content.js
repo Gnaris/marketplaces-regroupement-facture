@@ -43,6 +43,29 @@
     });
   }
 
+  // Faire : `cachedFaireCustomer` est alimenté par `injected-faire.js` quand
+  // Faire émet /api/crm/brands/customer-details (déclenché à l'ouverture d'une
+  // commande depuis le brand portal — un F5 brut ne le rejoue pas forcément).
+  // Lors d'un clic sur « Regrouper la facture » juste après l'arrivée sur la
+  // page, la requête peut encore être en vol : on patiente ici avant de rendre
+  // le modal pour ne pas afficher un regroupement sans bloc livraison (= pas
+  // de bouton Easy-Express). Timeout 8 s puis on continue sans adresses.
+  function waitForFaireCustomer(timeoutMs) {
+    return new Promise(function (resolve) {
+      if (cachedFaireCustomer) return resolve(cachedFaireCustomer);
+      const start = Date.now();
+      const interval = setInterval(function () {
+        if (cachedFaireCustomer) {
+          clearInterval(interval);
+          resolve(cachedFaireCustomer);
+        } else if (Date.now() - start >= timeoutMs) {
+          clearInterval(interval);
+          resolve(null);
+        }
+      }, 200);
+    });
+  }
+
   if (site === "pfs") {
     const s = document.createElement("script");
     s.src = chrome.runtime.getURL("injected.js");
@@ -271,6 +294,13 @@
       }
       if (!result.ok) {
         throw new Error(result.error || "Erreur inconnue");
+      }
+      if (site === "faire" && !cachedFaireCustomer) {
+        showModal({
+          loading: true,
+          loadingText: "Récupération de l'adresse de livraison Faire…"
+        });
+        await waitForFaireCustomer(8000);
       }
       let parsed;
       if (site === "pfs") parsed = parsePfs(result.data);
@@ -1016,19 +1046,43 @@
     }
     if (customerData) {
       try {
-        console.log("[Regroupement][Faire] customerData interceptée :", customerData);
+        console.log(
+          "[Regroupement][Faire] customerData interceptée — clés racine :",
+          Object.keys(customerData || {}),
+          "\n  payload complet :", customerData
+        );
       } catch (e) { /* noop */ }
       const bcv = customerData.brand_customer_view || {};
       const storeName = bcv.store_name || "";
       const contactName = bcv.contact_name || "";
-      const shipping = customerData.default_shipping_address;
+      // Faire a déjà renommé cette route une fois (31/08/2026). La forme du
+      // payload peut dériver : on cherche l'adresse d'expédition à plusieurs
+      // emplacements plausibles avant d'abandonner.
+      const rdRaw = customerData.retailer_details || {};
+      const shipping =
+        customerData.default_shipping_address
+        || customerData.shipping_address
+        || customerData.shippingAddress
+        || rdRaw.default_shipping_address
+        || rdRaw.shipping_address
+        || rdRaw.address
+        || null;
       const shipFields = faireAddrToFields(shipping, storeName, contactName);
-      if (shipFields) faireAddresses.push({ title: "Adresse de livraison", fields: shipFields });
-      const rd = customerData.retailer_details || {};
-      const billFields = faireBillingFields(rd, bcv, shipping, storeName, contactName);
+      if (shipFields) {
+        faireAddresses.push({ title: "Adresse de livraison", fields: shipFields });
+      } else {
+        try {
+          console.warn(
+            "[Regroupement][Faire] Aucune adresse de livraison trouvée dans customerData — la forme du payload a probablement changé. Clés disponibles :",
+            Object.keys(customerData || {}),
+            "retailer_details :", rdRaw
+          );
+        } catch (e) { /* noop */ }
+      }
+      const billFields = faireBillingFields(rdRaw, bcv, shipping, storeName, contactName);
       if (billFields) faireAddresses.push({ title: "Adresse de facturation", fields: billFields });
     } else {
-      console.log("[Faire] Aucune donnée customer interceptée. Rechargez la page de la commande pour que la requête soit captée.");
+      console.log("[Faire] Aucune donnée customer interceptée (timeout 8 s). Rechargez la page de la commande pour que la requête soit captée.");
     }
 
     return {
@@ -1838,7 +1892,7 @@
     const eeBtn = document.getElementById("pfs-ee-btn");
 
     if (state.loading) {
-      body.appendChild(el("p", { className: "pfs-info", text: "Chargement de la commande…" }));
+      body.appendChild(el("p", { className: "pfs-info", text: state.loadingText || "Chargement de la commande…" }));
       footer.style.display = "none";
       return;
     }
