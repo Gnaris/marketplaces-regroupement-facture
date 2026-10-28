@@ -110,24 +110,31 @@
     });
   });
 
-  // ─── Lookup SIRET ──────────────────────────────────────────────────
+  // ─── Lookup SIRET / SIREN / N° TVA UE ──────────────────────────────
   el.siretBtn.addEventListener("click", function () {
-    const q = el.siretLookup.value.replace(/\D/g, "");
-    if (q.length !== 14 && q.length !== 9) {
-      setStatus(el.siretStatus, "Saisissez un SIRET (14) ou un SIREN (9).", "warn");
+    const raw = el.siretLookup.value;
+    const classified = classifyLookup(raw);
+    if (!classified) {
+      setStatus(el.siretStatus, "Saisissez un SIRET (14), un SIREN (9) ou un n° TVA UE.", "warn");
       return;
     }
-    const kind = q.length === 14 ? "siret" : "siren";
-    setStatus(el.siretStatus, "Recherche…", "muted");
+    setStatus(el.siretStatus, classified.route === "vies"
+      ? "Vérification VIES (" + classified.country + ")…"
+      : "Recherche…", "muted");
     el.siretBtn.disabled = true;
-    chrome.runtime.sendMessage({ type: "ANNUAIRE_LOOKUP", query: q, kind: kind }, function (res) {
+
+    const msg = classified.route === "vies"
+      ? { type: "VIES_LOOKUP", query: classified.query }
+      : { type: "ANNUAIRE_LOOKUP", query: classified.query, kind: classified.kind };
+
+    chrome.runtime.sendMessage(msg, function (res) {
       el.siretBtn.disabled = false;
       if (chrome.runtime.lastError) {
         setStatus(el.siretStatus, "Erreur : " + chrome.runtime.lastError.message, "err");
         return;
       }
       if (!res || !res.ok) {
-        setStatus(el.siretStatus, (res && res.error) || "Erreur annuaire.", "err");
+        setStatus(el.siretStatus, (res && res.error) || "Erreur de vérification.", "err");
         return;
       }
       const d = res.data || {};
@@ -135,15 +142,80 @@
         setStatus(el.siretStatus, d.reason || "Entreprise introuvable.", "warn");
         return;
       }
-      el.s_company.value = d.denomination || el.s_company.value;
-      el.s_siret.value = d.siret || el.s_siret.value;
-      el.s_street.value = d.adresse || el.s_street.value;
-      el.s_postalCode.value = d.codePostal || el.s_postalCode.value;
-      el.s_city.value = d.commune || el.s_city.value;
-      if (!el.s_country.value) el.s_country.value = "France";
-      setStatus(el.siretStatus, "✓ Récupéré : " + (d.denomination || d.siret), "ok");
+      if (classified.route === "vies") {
+        if (d.denomination) el.s_company.value = d.denomination;
+        // SIRET non pertinent pour une TVA UE non-FR — on laisse le champ tel quel.
+        const parsed = parseViesAddressBlock(d.adresseLigne || "");
+        if (parsed.street) el.s_street.value = parsed.street;
+        if (parsed.postalCode) el.s_postalCode.value = parsed.postalCode;
+        if (parsed.city) el.s_city.value = parsed.city;
+        const frCountry = isoToCountryFr(d.country);
+        if (frCountry) el.s_country.value = frCountry;
+        setStatus(el.siretStatus, "✓ VIES — " + (d.denomination || "n° TVA valide (" + d.tva + ")"), "ok");
+      } else {
+        el.s_company.value = d.denomination || el.s_company.value;
+        el.s_siret.value = d.siret || el.s_siret.value;
+        el.s_street.value = d.adresse || el.s_street.value;
+        el.s_postalCode.value = d.codePostal || el.s_postalCode.value;
+        el.s_city.value = d.commune || el.s_city.value;
+        if (!el.s_country.value) el.s_country.value = "France";
+        setStatus(el.siretStatus, "✓ Récupéré : " + (d.denomination || d.siret), "ok");
+      }
     });
   });
+
+  // Classification : préfixe pays (2 lettres) d'abord — sinon "DE123456789"
+  // (TVA DE, 9 chiffres) serait pris pour un SIREN français.
+  function classifyLookup(raw) {
+    const cleaned = String(raw || "").replace(/[\s\-.]/g, "").toUpperCase();
+    const EU = new Set(["AT","BE","BG","CY","CZ","DE","DK","EE","EL","ES","FI","FR","HR","HU","IE","IT","LT","LU","LV","MT","NL","PL","PT","RO","SE","SI","SK","XI"]);
+    if (/^[A-Z]{2}/.test(cleaned)) {
+      let country = cleaned.slice(0, 2);
+      if (country === "GR") country = "EL";
+      if (!EU.has(country)) return null;
+      const number = cleaned.slice(2);
+      if (!/^[0-9A-Z+*]{2,13}$/.test(number)) return null;
+      if (country === "FR") {
+        if (!/^[0-9A-HJ-NP-Z]{2}\d{9}$/.test(number)) return null;
+        return { route: "annuaire", kind: "siren", query: number.slice(-9) };
+      }
+      return { route: "vies", query: country + number, country: country === "EL" ? "GR" : country };
+    }
+    const digits = cleaned.replace(/\D/g, "");
+    if (digits.length === 14) return { route: "annuaire", kind: "siret", query: digits };
+    if (digits.length === 9) return { route: "annuaire", kind: "siren", query: digits };
+    return null;
+  }
+
+  function parseViesAddressBlock(addr) {
+    const out = { street: "", postalCode: "", city: "" };
+    if (!addr) return out;
+    const lines = String(addr).split(/\r?\n/).map(function (l) { return l.trim(); }).filter(Boolean);
+    if (!lines.length) return out;
+    const last = lines[lines.length - 1];
+    const m = last.match(/^\s*([0-9][0-9A-Z\-\s]{1,8}?)\s{1,2}(.+)$/i);
+    if (m) {
+      out.postalCode = m[1].replace(/\s+/g, "");
+      out.city = m[2].trim();
+      out.street = lines.slice(0, -1).join(", ");
+    } else {
+      out.street = lines.join(", ");
+    }
+    return out;
+  }
+
+  function isoToCountryFr(iso) {
+    const map = {
+      AT: "Autriche", BE: "Belgique", BG: "Bulgarie", CY: "Chypre",
+      CZ: "Tchéquie", DE: "Allemagne", DK: "Danemark", EE: "Estonie",
+      EL: "Grèce", GR: "Grèce", ES: "Espagne", FI: "Finlande", FR: "France",
+      HR: "Croatie", HU: "Hongrie", IE: "Irlande", IT: "Italie",
+      LT: "Lituanie", LU: "Luxembourg", LV: "Lettonie", MT: "Malte",
+      NL: "Pays-Bas", PL: "Pologne", PT: "Portugal", RO: "Roumanie",
+      SE: "Suède", SI: "Slovénie", SK: "Slovaquie", XI: "Royaume-Uni"
+    };
+    return map[(iso || "").toUpperCase()] || "";
+  }
 
   // ─── Enregistrer ───────────────────────────────────────────────────
   el.save.addEventListener("click", function () {

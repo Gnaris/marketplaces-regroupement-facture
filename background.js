@@ -95,6 +95,17 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return;
   }
 
+  if (message.type === "SAGE_BRIDGE_CREATE") {
+    // Création directe d'une facture provisoire dans Sage 50 via SageBridge
+    // (programme Windows local, http://127.0.0.1:8765 — voir CLAUDE.md).
+    // Fetch depuis le service worker : l'origine est déclarée dans
+    // host_permissions, donc pas de CORS ni de Private Network Access.
+    sageBridgeCreate(message.payload || {})
+      .then(function (res) { sendResponse(res); })
+      .catch(function (err) { sendResponse({ ok: false, unreachable: true, error: (err && err.message) || String(err) }); });
+    return true;
+  }
+
   if (message.type === "SAGE_LOOKUP_REFS") {
     const refs = Array.isArray(message.refs) ? message.refs.slice(0, 60) : [];
     Promise.all(
@@ -117,6 +128,13 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
 
   if (message.type === "ANNUAIRE_LOOKUP") {
     annuaireLookup(message.query, message.kind)
+      .then(function (data) { sendResponse({ ok: true, data: data }); })
+      .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
+    return true;
+  }
+
+  if (message.type === "VIES_LOOKUP") {
+    viesLookup(message.query)
       .then(function (data) { sendResponse({ ok: true, data: data }); })
       .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
     return true;
@@ -491,6 +509,77 @@ function tvaFromSiren(siren) {
   return "FR" + key + siren;
 }
 
+// ---- VIES (vérification TVA UE hors FR) ----
+// VIES REST officiel : https://ec.europa.eu/taxation_customs/vies/rest-api/
+// Codes pays acceptés par VIES : les 27 EM + XI (Irlande du Nord). La Grèce
+// est "EL" dans VIES (jamais "GR") — on tolère "GR" en entrée et on convertit.
+// Les parties numériques varient par pays (NL/SE/HU peuvent contenir des
+// lettres), d'où la regex permissive sur le corps.
+const EU_VAT_COUNTRIES = new Set([
+  "AT","BE","BG","CY","CZ","DE","DK","EE","EL","ES","FI","FR","HR","HU",
+  "IE","IT","LT","LU","LV","MT","NL","PL","PT","RO","SE","SI","SK","XI"
+]);
+
+function parseEuVat(raw) {
+  const cleaned = String(raw || "").replace(/[\s\-.]/g, "").toUpperCase();
+  if (cleaned.length < 4) return null;
+  let country = cleaned.slice(0, 2);
+  if (country === "GR") country = "EL";
+  if (!EU_VAT_COUNTRIES.has(country)) return null;
+  const number = cleaned.slice(2);
+  if (!/^[0-9A-Z+*]{2,13}$/.test(number)) return null;
+  return { country: country, number: number };
+}
+
+// Appelle VIES. Réponse officielle (vérifiée sur l'endpoint REST) :
+//   { isValid, requestDate, userError, name, address, requestIdentifier, ... }
+// VIES renvoie "---" pour name/address quand l'État membre refuse la
+// divulgation (DE, ES notamment). On normalise ces valeurs à "".
+function viesLookup(rawVat) {
+  const parsed = parseEuVat(rawVat);
+  if (!parsed) {
+    return Promise.resolve({ found: false, source: "VIES", reason: "N° TVA UE invalide (préfixe pays + chiffres attendus)." });
+  }
+  const url =
+    "https://ec.europa.eu/taxation_customs/vies/rest-api/ms/" +
+    encodeURIComponent(parsed.country) +
+    "/vat/" + encodeURIComponent(parsed.number);
+  return fetch(url, {
+    method: "GET",
+    headers: { Accept: "application/json" }
+  })
+    .then(function (resp) {
+      return resp.json().catch(function () { return null; }).then(function (json) {
+        if (!resp.ok) {
+          const code = (json && (json.userError || json.message)) || resp.status + " " + resp.statusText;
+          throw new Error("VIES : " + code);
+        }
+        return json;
+      });
+    })
+    .then(function (json) {
+      if (!json) return { found: false, source: "VIES", reason: "Réponse VIES vide." };
+      const isValid = json.isValid === true || json.valid === true;
+      const rawName = String(json.name || json.traderName || "").trim();
+      const rawAddr = String(json.address || json.traderAddress || "").trim();
+      const name = rawName === "---" ? "" : rawName;
+      const address = rawAddr === "---" ? "" : rawAddr;
+      const countryOut = parsed.country === "EL" ? "GR" : parsed.country;
+      return {
+        found: isValid,
+        source: "VIES",
+        valid: isValid,
+        country: countryOut,
+        tva: parsed.country + parsed.number,
+        denomination: name,
+        adresseLigne: address,
+        requestDate: json.requestDate || null,
+        userError: json.userError || null,
+        reason: isValid ? "" : "N° TVA non valide selon VIES."
+      };
+    });
+}
+
 // ─────────────────────────────────────────────
 // Easy-Express v3 — cotation + création bordereau
 // Doc : https://easy-express.fr/storage/file/download/v3.html
@@ -834,4 +923,35 @@ async function easyExpressValidateKey(token) {
   } catch (err) {
     return { ok: false, error: (err && err.message) || String(err) };
   }
+}
+
+
+// ─── SageBridge (création directe dans Sage 50) ───────────────────────────
+const SAGE_BRIDGE_URL = "http://127.0.0.1:8765";
+
+async function sageBridgeCreate(payload) {
+  const controller = new AbortController();
+  // SageBridge borne chaque opération Sage à 2 minutes : on attend un peu plus.
+  const timer = setTimeout(function () { controller.abort(); }, 150000);
+  let response;
+  try {
+    response = await fetch(SAGE_BRIDGE_URL + "/facture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    // Délai dépassé : la facture a peut-être été créée quand même (ne pas parler de « SageBridge absent »).
+    if (err && err.name === "AbortError") return { ok: false, timeout: true, error: "Délai dépassé" };
+    // Connexion refusée = SageBridge pas lancé (ou port changé).
+    return { ok: false, unreachable: true, error: (err && err.message) || String(err) };
+  }
+  clearTimeout(timer);
+  let data = null;
+  try { data = await response.json(); } catch (e) { data = null; }
+  if (!data) return { ok: false, error: "Réponse illisible de SageBridge (HTTP " + response.status + ")." };
+  data.status = response.status;
+  return data;
 }

@@ -815,22 +815,87 @@
       if (isFinite(v) && v > 0) { mcTotalTTC = v; break; }
     }
 
+    // Adresses Microstore (vérifié en live le 28/10/2026, commandes #1001228-30).
+    // `client_info.company_name` / `first_name` = simple nom du client (souvent
+    // nom + prénom) : ce n'est PAS la société. La vraie société est :
+    //   - livraison : `client_info.address_name` (nom de l'adresse de la commande,
+    //     ex. « SAS JS », « SARL B’JOIE ») ;
+    //   - facturation : `invoice_title` (champ « Société » de la fiche, ex. « JS »),
+    //     remplacé par `address_name` quand celui-ci le contient (forme juridique
+    //     complète : « JS » → « SAS JS »).
+    // Adresse de facturation = `invoice_address` / `invoice_zip` / `invoice_country` ;
+    // la ville n'existe que dans la fiche client (`customer/get`, joint par
+    // injected-mc.js sous `json.__mcCustomer`) : entrée du carnet d'adresses qui
+    // correspond, sinon `cust.city`. Adresse de livraison = `client_info.address/zip/city/country`.
     const addresses = [];
     const ci = doc.client_info || {};
+    const cust = json.__mcCustomer || null;
+    const s = function (v) { return v == null ? "" : String(v).replace(/\s+/g, " ").trim(); };
+    const norm = function (v) {
+      return s(v).normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[’'`]/g, "'").toLowerCase();
+    };
+    const countryName = function (c) {
+      const v = s(c);
+      if (/^[A-Za-z]{2}$/.test(v)) {
+        try { return new Intl.DisplayNames(["fr"], { type: "region" }).of(v.toUpperCase()) || v; } catch (e) { return v; }
+      }
+      return v;
+    };
+    const mcContact = s(firstNonEmpty(ci.first_name, cust && cust.name, ci.company_name));
+    const invoiceTitle = s(firstNonEmpty(ci.invoice_title, cust && cust.invoice_title));
+    const addressName = s(ci.address_name);
+    const legacyCompany = s(ci.company_name);
+    const shipCompany = addressName || invoiceTitle ||
+      (legacyCompany && norm(legacyCompany) !== norm(mcContact) ? legacyCompany : "");
+    let billCompany = invoiceTitle;
+    if (billCompany && addressName && norm(addressName).indexOf(norm(billCompany)) !== -1) billCompany = addressName;
+    if (!billCompany) billCompany = shipCompany;
+    const vat = s(firstNonEmpty(ci.vat_number, cust && cust.vat_number, ci.vat_num, ci.tax_number));
+    const email = s(firstNonEmpty(ci.email, cust && cust.email));
+
     const shipFields = [];
-    const mcCompany = (ci.company_name || "").trim();
-    const mcFullName = [ci.first_name, ci.last_name].filter(function (x) { return x && String(x).trim(); }).join(" ").trim();
-    pushField(shipFields, "Nom de société", mcCompany);
-    if (mcFullName && mcFullName !== mcCompany) pushField(shipFields, "Nom du contact", mcFullName);
+    pushField(shipFields, "Nom de société", shipCompany);
+    if (mcContact && norm(mcContact) !== norm(shipCompany)) pushField(shipFields, "Nom du contact", mcContact);
     pushField(shipFields, "Adresse", ci.address);
     pushField(shipFields, "Code postal", ci.zip);
     pushField(shipFields, "Ville", ci.city);
-    pushField(shipFields, "Pays", ci.country);
+    pushField(shipFields, "Pays", countryName(ci.country));
     pushField(shipFields, "Téléphone", ci.address_phone || ci.phone);
-    pushField(shipFields, "Email", ci.email);
-    pushField(shipFields, "N° TVA", ci.vat_num);
+    pushField(shipFields, "Email", email);
+    pushField(shipFields, "N° TVA", vat);
     if (shipFields.length) addresses.push({ title: "Adresse de livraison", fields: shipFields });
-    addresses.push({ title: "Adresse de facturation", fields: [{ label: null, value: "Voir l'iPad" }] });
+
+    const billAddress = s(firstNonEmpty(ci.invoice_address, cust && cust.invoice_address));
+    const billZip = s(firstNonEmpty(ci.invoice_zip, cust && cust.invoice_zip));
+    let billCity = "";
+    if (cust && cust.address_info && typeof cust.address_info === "object") {
+      const book = Object.keys(cust.address_info).map(function (k) { return cust.address_info[k]; });
+      const hit = book.find(function (a) {
+        return a && String(a.is_del || "0") === "0" && s(a.zip) === billZip && norm(a.address) === norm(billAddress);
+      }) || book.find(function (a) {
+        return a && String(a.is_del || "0") === "0" && s(a.zip) === billZip && s(a.invoice_title);
+      });
+      if (hit) billCity = s(hit.city);
+    }
+    if (!billCity && cust) billCity = s(cust.city);
+    if (!billCity && billZip && billZip === s(ci.zip)) billCity = s(ci.city);
+    const billCountry = countryName(firstNonEmpty(cust && cust.invoice_country, ci.invoice_country, cust && cust.country, ci.country));
+
+    if (billAddress) {
+      const billFields = [];
+      pushField(billFields, "Nom de société", billCompany);
+      if (mcContact && norm(mcContact) !== norm(billCompany)) pushField(billFields, "Nom du contact", mcContact);
+      pushField(billFields, "Adresse", billAddress);
+      pushField(billFields, "Code postal", billZip);
+      pushField(billFields, "Ville", billCity);
+      pushField(billFields, "Pays", billCountry);
+      pushField(billFields, "Téléphone", ci.phone || ci.address_phone);
+      pushField(billFields, "Email", email);
+      pushField(billFields, "N° TVA", vat);
+      addresses.push({ title: "Adresse de facturation", fields: billFields });
+    } else {
+      addresses.push({ title: "Adresse de facturation", fields: [{ label: null, value: "Voir l'iPad" }] });
+    }
 
     return {
       rows: sortRows(map),
@@ -1697,6 +1762,9 @@
   let _originalRows = [];
   let _currentOrderInfo = null;
   let _secretClickCount = 0;
+  // Destination de l'export Sage : "csv" (fichier à importer) ou "bridge"
+  // (création directe de la facture provisoire via SageBridge, 3.24.0).
+  let _sageMode = "csv";
 
   function getSecretFactor(clicks) {
     if (clicks < 3) return 1;
@@ -1753,7 +1821,8 @@
     const footer = el("div", { id: "pfs-modal-footer" }, [
       imgStrip,
       el("button", { id: "pfs-ee-btn", type: "button", text: "Bordereau Easy-Express", onClick: function () { openEasyExpressFromOrder(); } }),
-      el("button", { id: "pfs-sage-btn", type: "button", text: "Exporter CSV Sage", onClick: exportToSageCsv }),
+      el("button", { id: "pfs-sage-direct-btn", type: "button", text: "Créer dans Sage", onClick: function () { _sageMode = "bridge"; exportToSageCsv(); } }),
+      el("button", { id: "pfs-sage-btn", type: "button", text: "Exporter CSV Sage", onClick: function () { _sageMode = "csv"; exportToSageCsv(); } }),
       el("button", { id: "pfs-pdf-btn", type: "button", text: "Exporter en PDF", onClick: exportToPdf }),
       el("button", { id: "pfs-close-btn", type: "button", text: "Fermer", onClick: hideModal })
     ]);
@@ -1889,6 +1958,7 @@
     _secretClickCount = 0;
     const pdfBtn = document.getElementById("pfs-pdf-btn");
     const sageBtn = document.getElementById("pfs-sage-btn");
+    const sageDirectBtn = document.getElementById("pfs-sage-direct-btn");
     const eeBtn = document.getElementById("pfs-ee-btn");
 
     if (state.loading) {
@@ -1901,11 +1971,13 @@
       footer.style.display = "flex";
       if (pdfBtn) pdfBtn.style.display = "none";
       if (sageBtn) sageBtn.style.display = "none";
+      if (sageDirectBtn) sageDirectBtn.style.display = "none";
       if (eeBtn) eeBtn.style.display = "none";
       return;
     }
     if (pdfBtn) pdfBtn.style.display = "";
     if (sageBtn) sageBtn.style.display = "";
+    if (sageDirectBtn) { sageDirectBtn.style.display = ""; sageDirectBtn.disabled = false; sageDirectBtn.textContent = "Créer dans Sage"; }
     // Easy-Express : visible seulement si on a au moins une adresse à proposer.
     const hasAddress = Array.isArray(state.orderInfo && state.orderInfo.addresses)
       && state.orderInfo.addresses.some(function (a) { return a && Array.isArray(a.fields) && a.fields.length; });
@@ -2395,11 +2467,10 @@
     });
   }
 
-  function buildSageCsvFromItems(items) {
-    // Une ligne par (article Sage, prix, référence produit), avec le détail
-    // des couleurs commandées dans la description et la quantité totale.
-    // Ex : "Lot de boucles d'oreilles - PRT-OREILLE170 - ROUGE x3 - BLEU x8",
-    // Qté = 11.
+  // Regroupe les items résolus en lignes Sage : une ligne par (article Sage,
+  // prix, référence produit), avec le détail des couleurs et la quantité
+  // totale. Partagé par l'export CSV et la création directe (SageBridge).
+  function aggregateSageItems(items) {
     const agg = new Map();
     const missing = [];
     for (const it of items) {
@@ -2437,6 +2508,15 @@
       if ((a.ref || "") !== (b.ref || "")) return (a.ref || "") < (b.ref || "") ? -1 : 1;
       return a.prixUnitaire - b.prixUnitaire;
     });
+    return { list: list, missing: missing };
+  }
+
+  function buildSageCsvFromItems(items) {
+    // Ex : "Lot de boucles d'oreilles - PRT-OREILLE170 - ROUGE x3 - BLEU x8",
+    // Qté = 11.
+    const aggregated = aggregateSageItems(items);
+    const list = aggregated.list;
+    const missing = aggregated.missing;
     const lines = ["TypeLigne;TypePiece;NumPiece;DatePiece;CodeClient;CodeArticle;Quantite;PUHT;TauxTVA;Description"];
     lines.push(["E", "Facture", "", fmtSageDate(new Date()), SAGE_CLIENT_CODE, "", "", "", "", ""].join(";"));
     for (const l of list) {
@@ -2474,7 +2554,187 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
 
+  // ---- Création directe dans Sage via SageBridge (3.24.0) ----
+  // SageBridge est un programme Windows (installé par SageBridge-Setup.exe,
+  // github.com/Gnaris/SageBridge) qui écoute sur http://127.0.0.1:8765/ et crée la facture
+  // PROVISOIRE dans Sage 50 par COM. Même pipeline de résolution que le CSV ;
+  // seule la description change : texte brut multi-lignes (le COM stocke le
+  // RTF tel quel, vérifié le 19/10/2026), « LIBELLÉ - réf » puis une ligne
+  // par couleur.
+  function buildSageBridgePayload(items) {
+    const aggregated = aggregateSageItems(items);
+    const lines = [];
+    for (const l of aggregated.list) {
+      const label = l.descLabel || sageArticleLabel(l.code);
+      let desc = label ? label.toUpperCase() : "";
+      if (l.ref) desc += (desc ? " - " : "") + l.ref;
+      for (const entry of l.colors.entries()) {
+        desc += "\n" + entry[0] + " x" + entry[1];
+      }
+      lines.push({
+        code: l.code,
+        qty: l.quantite,
+        puht: Math.round(l.prixUnitaire * 10000) / 10000,
+        tva: parseFloat(SAGE_TVA_RATE.replace(",", ".")),
+        description: desc
+      });
+    }
+    return {
+      payload: {
+        site: site || "",
+        orderNo: String((_currentOrderInfo && _currentOrderInfo.orderNo) || ""),
+        client: SAGE_CLIENT_CODE,
+        customer: sageCustomerBlocks().customer,
+        shipping: sageCustomerBlocks().shipping,
+        // Pas de « reference » : la Référence de la facture reste vide (demande de Boris, 20/10/2026, 3.25.2).
+        lines: lines
+      },
+      missing: aggregated.missing
+    };
+  }
+
+  // Blocs d'adresse de la commande → client Sage (facturation + livraison).
+  // Même source que l'Easy-Express (orderInfo.addresses, labels normalisés
+  // par pushField). Un bloc réduit à une note (« Voir l'iPad », « Identique à
+  // l'adresse de livraison ») ne contient aucun champ labellisé : il est
+  // ignoré, et la facturation retombe alors sur la livraison.
+  function sageAddressBlockToCustomer(block) {
+    const fields = (block && block.fields) || [];
+    if (!fields.some(function (f) { return f && f.label; })) return null;
+    const c = {
+      company: eeFieldByLabel(fields, ["société", "societe", "nom légal", "nom legal", "shop", "boutique"]),
+      contact: eeFieldByLabel(fields, ["contact"]),
+      address1: eeFieldByLabel(fields, ["adresse", "rue"]),
+      address2: eeFieldByLabel(fields, ["complément", "complement"]),
+      postalCode: eeFieldByLabel(fields, ["code postal", "cp"]),
+      city: eeFieldByLabel(fields, ["ville"]),
+      country: eeFieldByLabel(fields, ["pays"]) || "France",
+      phone: eeFieldByLabel(fields, ["téléphone", "telephone", "tél", "tel"]),
+      email: eeFieldByLabel(fields, ["email", "e-mail", "courriel"]),
+      siret: eeFieldByLabel(fields, ["siret", "n° d'enregistrement", "enregistrement"]),
+      vat: eeFieldByLabel(fields, ["tva"])
+    };
+    if (!(c.company || c.contact) || !(c.address1 || c.city)) return null;
+    return c;
+  }
+
+  function sageCustomerBlocks() {
+    const addresses = (_currentOrderInfo && _currentOrderInfo.addresses) || [];
+    const billingBlock = addresses.find(function (a) { return a && /facturation/i.test(a.title || ""); });
+    const shippingBlock = addresses.find(function (a) { return a && /livraison/i.test(a.title || ""); });
+    const shipping = sageAddressBlockToCustomer(shippingBlock) || null;
+    const billing = sageAddressBlockToCustomer(billingBlock) || shipping || sageAddressBlockToCustomer(addresses[0]) || null;
+    return { customer: billing, shipping: shipping };
+  }
+
+  function siteLabelForSage() {
+    const names = { pfs: "PFS", efp: "Efashion", aks: "Ankorstore", faire: "Faire", mc: "Microstore", oc: "Orderchamp", shopify: "Shopify", bj: "Beli & Jolie", bm: "Bijoux Mystères", issyma: "Issyma" };
+    return names[site] || "";
+  }
+
+  function sageBridgeStatus(text, kind) {
+    const body = document.getElementById("pfs-modal-body");
+    if (!body) return null;
+    let box = document.getElementById("pfs-sage-bridge-status");
+    if (!box) {
+      box = el("div", { id: "pfs-sage-bridge-status" });
+      body.appendChild(box);
+    }
+    box.className = "pfs-sage-bridge-status pfs-sage-bridge-" + (kind || "info");
+    while (box.firstChild) box.removeChild(box.firstChild);
+    box.appendChild(el("span", { text: text }));
+    box.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    return box;
+  }
+
+  function sageBridgeSend(payload) {
+    return new Promise(function (resolve) {
+      try {
+        chrome.runtime.sendMessage({ type: "SAGE_BRIDGE_CREATE", payload: payload }, function (res) {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, unreachable: true, error: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(res || { ok: false, error: "Pas de réponse du service worker." });
+        });
+      } catch (e) {
+        resolve({ ok: false, unreachable: true, error: e && e.message ? e.message : String(e) });
+      }
+    });
+  }
+
+  async function finishSageBridge(items) {
+    const built = buildSageBridgePayload(items);
+    const btn = document.getElementById("pfs-sage-direct-btn");
+    if (built.missing.length) {
+      sageBridgeStatus(
+        "Impossible de créer la facture : aucun code article Sage pour " + built.missing.join(", ") +
+        ". Attribuez-leur un article (bouton « Créer dans Sage » à nouveau) ou passez par l'export CSV.",
+        "error"
+      );
+      return;
+    }
+    if (!built.payload.lines.length) {
+      sageBridgeStatus("Aucune ligne à facturer.", "error");
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = "Création dans Sage…"; }
+    const cust = built.payload.customer;
+    sageBridgeStatus(
+      "Envoi à SageBridge (" + built.payload.lines.length + " ligne(s)" +
+      (cust ? ", client « " + (cust.company || cust.contact) + " »" : ", client par défaut " + SAGE_CLIENT_CODE) + ")…",
+      "info"
+    );
+    let res = await sageBridgeSend(built.payload);
+    if (res && res.duplicate) {
+      const again = window.confirm(
+        "Cette commande a déjà été envoyée à Sage (facture " + (res.numero || "?") + ").\n\nCréer quand même une nouvelle facture ?"
+      );
+      if (again) {
+        built.payload.force = true;
+        res = await sageBridgeSend(built.payload);
+      } else {
+        sageBridgeStatus("Déjà dans Sage : facture " + (res.numero || "?") + ". Rien n'a été créé.", "warn");
+        if (btn) { btn.disabled = false; btn.textContent = "Créer dans Sage"; }
+        return;
+      }
+    }
+    if (btn) { btn.disabled = false; btn.textContent = "Créer dans Sage"; }
+    if (res && res.ok) {
+      const ht = typeof res.totalHT === "number" ? fmtEuro(res.totalHT) : "";
+      const cli = res.clientCode
+        ? " — client " + res.clientCode + (res.clientName ? " « " + res.clientName + " »" : "") + (res.clientCreated ? " (fiche créée)" : "")
+        : "";
+      sageBridgeStatus(
+        "Facture " + res.numero + " créée dans Sage (provisoire, à valider)" + cli + (ht ? " — total HT " + ht : "") +
+        " — " + (res.nbLines || built.payload.lines.length) + " ligne(s).",
+        "ok"
+      );
+      return;
+    }
+    if (res && res.timeout) {
+      sageBridgeStatus(
+        "SageBridge n'a pas répondu à temps. Vérifiez dans Sage si la facture a été créée avant de renvoyer (un second envoi de la même commande sera signalé).",
+        "warn"
+      );
+      return;
+    }
+    if (res && res.unreachable) {
+      sageBridgeStatus(
+        "SageBridge ne répond pas sur ce PC : lancez-le (menu Démarrer ou raccourci SageBridge du Bureau) puis réessayez, ou utilisez « Exporter CSV Sage ».",
+        "error"
+      );
+      return;
+    }
+    sageBridgeStatus("Facture non créée : " + ((res && res.error) || "erreur inconnue") +
+      ((res && res.messages && res.messages.length) ? " — " + res.messages.join(" / ") : ""), "error");
+  }
+
   function finishSageExport(items) {
+    if (_sageMode === "bridge") {
+      finishSageBridge(items);
+      return;
+    }
     const built = buildSageCsvFromItems(items);
     downloadSageCsv(built.csv);
     const body = document.getElementById("pfs-modal-body");
@@ -2497,7 +2757,9 @@
 
   async function exportToSageCsv() {
     if (!_originalRows.length || !_currentOrderInfo) return;
-    const btn = document.getElementById("pfs-sage-btn");
+    const bridgeMode = _sageMode === "bridge";
+    const btn = document.getElementById(bridgeMode ? "pfs-sage-direct-btn" : "pfs-sage-btn");
+    const btnLabel = bridgeMode ? "Créer dans Sage" : "Exporter CSV Sage";
     const factor = getSecretFactor(_secretClickCount);
 
     // Une entrée par produit (pas par ligne regroupée) : deux produits
@@ -2584,7 +2846,7 @@
         unresolved = unresolved.filter(function (it) { return !it.code; });
       }
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "Exporter CSV Sage"; }
+      if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
     }
 
     if (!unresolved.length) {
@@ -2660,7 +2922,7 @@
       el("button", {
         className: "pfs-sage-pick-ok",
         type: "button",
-        text: "Valider et exporter le CSV",
+        text: _sageMode === "bridge" ? "Valider et créer dans Sage" : "Valider et exporter le CSV",
         onClick: onValidate
       })
     ]);
@@ -2760,6 +3022,23 @@
     return tva ? tva.slice(-9) : null;
   }
 
+  // Détection TVA UE : codes pays acceptés par VIES (EL = Grèce, XI = NI UK).
+  // "GR" entrant est toléré et converti en "EL".
+  const EU_VAT_COUNTRIES = new Set([
+    "AT","BE","BG","CY","CZ","DE","DK","EE","EL","ES","FI","FR","HR","HU",
+    "IE","IT","LT","LU","LV","MT","NL","PL","PT","RO","SE","SI","SK","XI"
+  ]);
+  function parseEuVat(raw) {
+    const cleaned = String(raw || "").replace(/[\s\-.]/g, "").toUpperCase();
+    if (cleaned.length < 4) return null;
+    let country = cleaned.slice(0, 2);
+    if (country === "GR") country = "EL";
+    if (!EU_VAT_COUNTRIES.has(country)) return null;
+    const number = cleaned.slice(2);
+    if (!/^[0-9A-Z+*]{2,13}$/.test(number)) return null;
+    return { country: country, number: number, full: country + number };
+  }
+
   // Luhn standard — l'exception La Poste (SIRETs 356000000…) utilise la
   // somme des chiffres modulo 5. On accepte les deux ; on reste tolérant
   // sinon et on laisse l'annuaire trancher si la validation locale échoue.
@@ -2783,8 +3062,8 @@
   }
 
   // Scanne orderInfo.addresses pour détecter des champs SIRET / TVA.
-  // Pour TVA : accepte uniquement les formats français (FR + 11 chars).
-  // Pour SIRET : accepte 14 chiffres (ignore les séparateurs).
+  // Pour TVA : accepte TVA FR en priorité, sinon toute TVA UE reconnue par VIES.
+  // Pour SIRET : 14 chiffres (séparateurs ignorés).
   function extractSiretTvaFromOrderInfo(orderInfo) {
     const found = { siret: "", tva: "", isFrench: false };
     if (!orderInfo || !Array.isArray(orderInfo.addresses)) return found;
@@ -2800,15 +3079,20 @@
           if (digits.length === 14) found.siret = digits;
         }
         if (!found.tva && /tva/.test(label)) {
-          const tva = normalizeTvaFr(value);
-          if (tva) found.tva = tva;
+          const tvaFr = normalizeTvaFr(value);
+          if (tvaFr) {
+            found.tva = tvaFr;
+          } else {
+            const eu = parseEuVat(value);
+            if (eu) found.tva = (eu.country === "EL" ? "GR" : eu.country) + eu.number;
+          }
         }
         if (/pays/.test(label)) countryHints.push(value.toLowerCase());
       }
     }
     found.isFrench =
       !!found.siret ||
-      !!found.tva ||
+      (!!found.tva && found.tva.startsWith("FR")) ||
       countryHints.some(function (c) { return /\bfrance\b|^fr$/i.test(c); });
     return found;
   }
@@ -2839,45 +3123,63 @@
     });
   }
 
+  function callVies(query) {
+    if (!isExtensionContextAlive()) {
+      return Promise.reject(new Error("Extension rechargée — rechargez la page (F5)."));
+    }
+    return new Promise(function (resolve, reject) {
+      try {
+        chrome.runtime.sendMessage(
+          { type: "VIES_LOOKUP", query: query },
+          function (resp) {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+              return;
+            }
+            if (!resp || !resp.ok) {
+              reject(new Error((resp && resp.error) || "VIES indisponible."));
+              return;
+            }
+            resolve(resp.data || { found: false });
+          }
+        );
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
   function buildVerifEntrepriseSection(orderInfo) {
     const detected = extractSiretTvaFromOrderInfo(orderInfo);
+    // Pré-remplissage : SIRET > TVA (le SIRET donne plus d'infos côté annuaire).
+    const prefill = detected.siret || detected.tva || "";
 
     const box = el("section", { className: "pfs-verif-box" });
-    box.appendChild(el("h3", { className: "pfs-verif-title", text: "Vérification entreprise (Annuaire INSEE)" }));
+    box.appendChild(el("h3", { className: "pfs-verif-title", text: "Vérification entreprise (Annuaire INSEE / VIES)" }));
 
     const hint = el("p", { className: "pfs-verif-hint" });
-    hint.textContent = detected.siret || detected.tva
-      ? "Pièce détectée dans la commande — interrogation de l'annuaire en cours…"
-      : "Aucun SIRET ni n° TVA français détecté. Saisis-les manuellement si besoin.";
+    hint.textContent = prefill
+      ? "Pièce détectée dans la commande — vérification en cours…"
+      : "Saisis un SIRET (14), un SIREN (9) ou un n° TVA UE (ex. FR12123456789, DE123456789).";
     box.appendChild(hint);
 
     const form = el("div", { className: "pfs-verif-form" });
-    const siretInput = el("input", {
+    const qInput = el("input", {
       type: "text",
       className: "pfs-verif-input",
-      placeholder: "SIRET (14 chiffres)",
+      placeholder: "SIRET, SIREN ou N° TVA UE",
       autocomplete: "off",
       spellcheck: "false"
     });
-    siretInput.value = detected.siret || "";
-    const tvaInput = el("input", {
-      type: "text",
-      className: "pfs-verif-input",
-      placeholder: "N° TVA (ex. FR12123456789)",
-      autocomplete: "off",
-      spellcheck: "false"
-    });
-    tvaInput.value = detected.tva || "";
+    qInput.value = prefill;
     const btn = el("button", {
       type: "button",
       className: "pfs-verif-btn",
       text: "Vérifier"
     });
 
-    form.appendChild(el("label", { className: "pfs-verif-label", text: "SIRET" }));
-    form.appendChild(siretInput);
-    form.appendChild(el("label", { className: "pfs-verif-label", text: "N° TVA" }));
-    form.appendChild(tvaInput);
+    form.appendChild(el("label", { className: "pfs-verif-label", text: "Identifiant" }));
+    form.appendChild(qInput);
     form.appendChild(btn);
     box.appendChild(form);
 
@@ -2898,6 +3200,12 @@
       if (!data || !data.found) {
         const msg = (data && data.reason) || "Aucune entreprise trouvée pour cette référence.";
         result.appendChild(el("p", { className: "pfs-verif-empty", text: msg }));
+        if (warnings && warnings.length) {
+          for (const w of warnings) {
+            const cls = w && w.level === "alert" ? "pfs-verif-alert" : "pfs-verif-warn";
+            result.appendChild(el("p", { className: cls, text: w && w.text ? w.text : String(w) }));
+          }
+        }
         return;
       }
       const grid = el("dl", { className: "pfs-verif-grid" });
@@ -2911,38 +3219,82 @@
         grid.appendChild(row);
       }
 
+      const isVies = data.source === "VIES";
       const denomination = (data.denomination || "").toLocaleUpperCase("fr-FR");
       addRow("Dénomination", denomination, false);
-      const adresseFull = [data.adresse, [data.codePostal, data.commune].filter(Boolean).join(" ")]
-        .filter(Boolean)
-        .join(", ")
-        .toLocaleUpperCase("fr-FR");
-      addRow("Adresse siège", adresseFull, false);
-      addRow("SIRET siège", data.siret || "", true);
-      addRow("SIREN", data.siren || "", true);
-      addRow("N° TVA", data.tva || "", true);
-      if (data.activiteLibelle) {
-        const act = data.activiteCode
-          ? data.activiteLibelle + " (" + data.activiteCode + ")"
-          : data.activiteLibelle;
-        addRow("Activité", act, false);
-      }
-      if (data.etatAdministratif) {
-        const etatLabel = data.etatAdministratif === "A"
-          ? "Active"
-          : data.etatAdministratif === "F"
-          ? "Fermée (cessée)"
-          : String(data.etatAdministratif);
-        const row = el("div", { className: "pfs-verif-row" });
-        row.appendChild(el("dt", { text: "État :" }));
+
+      if (isVies) {
+        // VIES renvoie l'adresse en texte libre, souvent multi-lignes.
+        // On la montre telle quelle (uppercase pour cohérence avec le reste).
+        const addr = (data.adresseLigne || "").toLocaleUpperCase("fr-FR");
+        if (addr) {
+          const row = el("div", { className: "pfs-verif-row" });
+          row.appendChild(el("dt", { text: "Adresse :" }));
+          const dd = el("dd");
+          // préserver les retours à la ligne
+          addr.split(/\r?\n/).forEach(function (line, i) {
+            if (i > 0) dd.appendChild(el("br"));
+            dd.appendChild(document.createTextNode(line));
+          });
+          row.appendChild(dd);
+          row.appendChild(makeCopyButton(addr));
+          grid.appendChild(row);
+        } else if (!denomination) {
+          // DE/ES ne publient pas nom + adresse — on l'explique.
+          const row = el("div", { className: "pfs-verif-row" });
+          row.appendChild(el("dt", { text: "Détails :" }));
+          row.appendChild(el("dd", {
+            text: "L'État membre (" + (data.country || "") + ") ne divulgue pas le nom ni l'adresse via VIES."
+          }));
+          grid.appendChild(row);
+        }
+        addRow("N° TVA", data.tva || "", true);
+        // Badge valide / invalide
+        const stateRow = el("div", { className: "pfs-verif-row" });
+        stateRow.appendChild(el("dt", { text: "État :" }));
         const dd = el("dd");
-        const badge = el("span", {
-          className: data.etatAdministratif === "A" ? "pfs-verif-badge-ok" : "pfs-verif-badge-ko",
-          text: etatLabel
-        });
-        dd.appendChild(badge);
-        row.appendChild(dd);
-        grid.appendChild(row);
+        dd.appendChild(el("span", {
+          className: data.valid ? "pfs-verif-badge-ok" : "pfs-verif-badge-ko",
+          text: data.valid ? "Valide (VIES)" : "Non valide (VIES)"
+        }));
+        dd.appendChild(document.createTextNode(" "));
+        dd.appendChild(el("span", { className: "pfs-verif-source", text: "Source : VIES" }));
+        stateRow.appendChild(dd);
+        grid.appendChild(stateRow);
+      } else {
+        const adresseFull = [data.adresse, [data.codePostal, data.commune].filter(Boolean).join(" ")]
+          .filter(Boolean)
+          .join(", ")
+          .toLocaleUpperCase("fr-FR");
+        addRow("Adresse siège", adresseFull, false);
+        addRow("SIRET siège", data.siret || "", true);
+        addRow("SIREN", data.siren || "", true);
+        addRow("N° TVA", data.tva || "", true);
+        if (data.activiteLibelle) {
+          const act = data.activiteCode
+            ? data.activiteLibelle + " (" + data.activiteCode + ")"
+            : data.activiteLibelle;
+          addRow("Activité", act, false);
+        }
+        if (data.etatAdministratif) {
+          const etatLabel = data.etatAdministratif === "A"
+            ? "Active"
+            : data.etatAdministratif === "F"
+            ? "Fermée (cessée)"
+            : String(data.etatAdministratif);
+          const row = el("div", { className: "pfs-verif-row" });
+          row.appendChild(el("dt", { text: "État :" }));
+          const dd = el("dd");
+          const badge = el("span", {
+            className: data.etatAdministratif === "A" ? "pfs-verif-badge-ok" : "pfs-verif-badge-ko",
+            text: etatLabel
+          });
+          dd.appendChild(badge);
+          dd.appendChild(document.createTextNode(" "));
+          dd.appendChild(el("span", { className: "pfs-verif-source", text: "Source : INSEE" }));
+          row.appendChild(dd);
+          grid.appendChild(row);
+        }
       }
       result.appendChild(grid);
 
@@ -2954,63 +3306,78 @@
       }
     }
 
-    function runLookup(siretRaw, tvaRaw) {
-      const siretDigits = normalizeDigits(siretRaw);
-      const tvaNorm = normalizeTvaFr(tvaRaw);
+    // Détermine la route et la clé de recherche à partir d'une saisie libre.
+    // Priorité : si la saisie démarre par 2 lettres (préfixe pays), on la traite
+    // comme n° TVA UE — sinon on tombe sur SIRET (14) / SIREN (9). C'est la
+    // seule façon de distinguer "DE123456789" (TVA DE, 9 chiffres) d'un SIREN
+    // français (9 chiffres aussi).
+    function classifyQuery(raw) {
+      const cleaned = String(raw || "").replace(/[\s\-.]/g, "").toUpperCase();
+      if (/^[A-Z]{2}/.test(cleaned)) {
+        const eu = parseEuVat(cleaned);
+        if (eu) {
+          if (eu.country === "FR") {
+            const tvaFr = "FR" + eu.number;
+            return { route: "annuaire", kind: "siren", query: eu.number.slice(-9), tva: tvaFr, siren: eu.number.slice(-9) };
+          }
+          const displayCountry = eu.country === "EL" ? "GR" : eu.country;
+          return { route: "vies", query: eu.country + eu.number, tva: displayCountry + eu.number, country: displayCountry };
+        }
+        return null;
+      }
+      const digits = normalizeDigits(raw);
+      if (digits.length === 14) {
+        return { route: "annuaire", kind: "siret", query: digits, siret: digits, siren: digits.slice(0, 9) };
+      }
+      if (digits.length === 9) {
+        return { route: "annuaire", kind: "siren", query: digits, siren: digits };
+      }
+      // Secours : TVA FR saisie sans préfixe reconnaissable (très rare).
+      const tvaFr = normalizeTvaFr(raw);
+      if (tvaFr) {
+        return { route: "annuaire", kind: "siren", query: tvaFr.slice(-9), tva: tvaFr, siren: tvaFr.slice(-9) };
+      }
+      return null;
+    }
+
+    function runLookup(rawInput) {
+      const classified = classifyQuery(rawInput);
+      if (!classified) {
+        setStatus("pfs-verif-error",
+          "Saisissez un SIRET (14 chiffres), un SIREN (9 chiffres) ou un n° TVA UE (ex. FR12123456789, DE123456789).");
+        return;
+      }
       const warnings = [];
 
-      let query = "";
-      let kind = "";
-
-      if (siretDigits.length === 14) {
-        if (!isValidSiret(siretDigits)) {
-          warnings.push({ level: "warn", text: "Clé SIRET invalide (Luhn) — recherche lancée malgré tout." });
-        }
-        query = siretDigits;
-        kind = "siret";
-      } else if (tvaNorm) {
-        const siren = sirenFromTvaFr(tvaNorm);
-        if (!siren) {
-          setStatus("pfs-verif-error", "N° TVA français invalide.");
-          return;
-        }
-        query = siren;
-        kind = "siren";
-      } else {
-        setStatus("pfs-verif-error", "Saisissez un SIRET (14 chiffres) ou un n° TVA français (FR + 11 caractères).");
+      if (classified.route === "vies") {
+        setStatus("pfs-verif-loading", "Interrogation de VIES (" + classified.country + ")…");
+        callVies(classified.query)
+          .then(function (data) { renderResult(data, warnings); })
+          .catch(function (err) {
+            setStatus("pfs-verif-error", "Erreur VIES : " + ((err && err.message) || err));
+          });
         return;
       }
 
-      // Croisement local SIRET ⇄ TVA : si les deux sont fournis, le SIREN
-      // extrait du SIRET (9 premiers chiffres) doit correspondre à celui
-      // du n° TVA (9 derniers chars). On alerte avant même l'annuaire.
-      if (siretDigits.length === 14 && tvaNorm) {
-        const sirenFromSiret = siretDigits.slice(0, 9);
-        const sirenFromTva = sirenFromTvaFr(tvaNorm);
-        if (sirenFromSiret !== sirenFromTva) {
-          warnings.push({
-            level: "alert",
-            text: "⚠ Incohérence : le SIRET (" + siretDigits + ") et le n° TVA (" + tvaNorm + ") n'appartiennent pas à la même entreprise (SIREN différent)."
-          });
-        }
+      // Route annuaire : avertissement Luhn si SIRET invalide.
+      if (classified.kind === "siret" && !isValidSiret(classified.siret)) {
+        warnings.push({ level: "warn", text: "Clé SIRET invalide (Luhn) — recherche lancée malgré tout." });
       }
 
       setStatus("pfs-verif-loading", "Interrogation de l'annuaire…");
-
-      callAnnuaire(query, kind)
+      callAnnuaire(classified.query, classified.kind)
         .then(function (data) {
           if (data && data.found) {
-            // TVA saisi ⇄ TVA recalculée depuis l'annuaire
-            if (tvaNorm && data.tva && data.tva !== tvaNorm) {
+            // Si TVA saisie : vérifier qu'elle correspond à celle recalculée.
+            if (classified.tva && data.tva && data.tva !== classified.tva) {
               warnings.push({
                 level: "alert",
-                text: "⚠ Le n° TVA saisi (" + tvaNorm + ") ne correspond pas à celui de l'annuaire (" + data.tva + ")."
+                text: "⚠ Le n° TVA saisi (" + classified.tva + ") ne correspond pas à celui de l'annuaire (" + data.tva + ")."
               });
             }
-            // SIRET saisi ⇄ SIRET renvoyé par l'annuaire
-            if (siretDigits.length === 14 && data.siret && data.siret !== siretDigits) {
-              const sirenFromSiret = siretDigits.slice(0, 9);
-              if (data.siren && sirenFromSiret === data.siren) {
+            // Si SIRET saisi et l'annuaire renvoie un siège différent : établissement secondaire ou SIRET erroné.
+            if (classified.kind === "siret" && data.siret && data.siret !== classified.siret) {
+              if (data.siren && classified.siren === data.siren) {
                 warnings.push({
                   level: "warn",
                   text: "Le SIRET saisi correspond à un établissement secondaire — siège : " + data.siret + "."
@@ -3018,7 +3385,7 @@
               } else {
                 warnings.push({
                   level: "alert",
-                  text: "⚠ Le SIRET saisi (" + siretDigits + ") ne correspond pas à l'entreprise trouvée dans l'annuaire (SIRET siège : " + data.siret + ")."
+                  text: "⚠ Le SIRET saisi (" + classified.siret + ") ne correspond pas à l'entreprise trouvée dans l'annuaire (SIRET siège : " + data.siret + ")."
                 });
               }
             }
@@ -3030,20 +3397,16 @@
         });
     }
 
-    btn.addEventListener("click", function () {
-      runLookup(siretInput.value, tvaInput.value);
-    });
-    [siretInput, tvaInput].forEach(function (inp) {
-      inp.addEventListener("keydown", function (e) {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          runLookup(siretInput.value, tvaInput.value);
-        }
-      });
+    btn.addEventListener("click", function () { runLookup(qInput.value); });
+    qInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        runLookup(qInput.value);
+      }
     });
 
-    if (detected.siret || detected.tva) {
-      setTimeout(function () { runLookup(detected.siret, detected.tva); }, 0);
+    if (prefill) {
+      setTimeout(function () { runLookup(prefill); }, 0);
     }
 
     return box;

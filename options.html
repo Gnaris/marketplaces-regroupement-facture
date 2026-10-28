@@ -34,12 +34,14 @@
     <section class="card">
       <h2>Expéditeur (adresse figée sur chaque bordereau)</h2>
       <p class="hint">
-        Vous pouvez pré-remplir ces champs depuis un SIRET (API publique
-        <code>recherche-entreprises.api.gouv.fr</code>).
+        Vous pouvez pré-remplir ces champs depuis un SIRET (14), un SIREN (9)
+        ou un n° TVA UE. Le SIRET / SIREN interroge l'API française
+        <code>recherche-entreprises.api.gouv.fr</code> ; un n° TVA UE hors FR
+        passe par <code>VIES</code>.
       </p>
 
       <div class="row">
-        <input id="siretLookup" type="text" inputmode="numeric" placeholder="SIRET (14 chiffres)" maxlength="14" />
+        <input id="siretLookup" type="text" placeholder="SIRET, SIREN ou N° TVA UE (ex. DE123456789)" maxlength="20" />
         <button id="siretBtn" type="button" class="secondary">Rechercher</button>
         <span id="siretStatus" class="status muted"></span>
       </div>
