@@ -46,3 +46,32 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .status.ok { color: #0D7F3A; }
 .status.err { color: #B42318; }
 .status.warn { color: #B65B00; }
+
+/* ─── Modèles WhatsApp ─── */
+textarea {
+  width: 100%; padding: 9px 10px; border: 1px solid #D9D7D0; border-radius: 8px;
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  color: #1A1A1A; resize: vertical; outline: none;
+}
+textarea:focus { border-color: #1A1A1A; box-shadow: 0 0 0 3px rgba(26, 26, 26, 0.08); }
+.wa-group-title { margin: 16px 0 6px; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: #6B6B6B; }
+.wa-item { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border: 1px solid #ECEBE6; border-radius: 10px; margin-bottom: 6px; background: #FCFBF8; }
+.wa-item-main { flex: 1; min-width: 0; }
+.wa-item-title { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wa-item-body { margin-top: 3px; font-size: 12px; color: #6B6B6B; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.wa-item-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.wa-item-actions button { height: 30px; padding: 0 10px; font-size: 12px; }
+.wa-badge { font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
+.wa-badge.mod { background: #FEF3C7; color: #92400E; }
+.wa-badge.custom { background: #DBEAFE; color: #1E40AF; }
+button.danger { background: #fff; color: #B42318; border-color: #F2C4C0; }
+button.danger:hover { background: #FEF3F2; }
+.wa-ed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.wa-ed-grid label, .wa-ed-label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #6B6B6B; margin-bottom: 10px; }
+.wa-ed-vars { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 12px; }
+.wa-ed-vars button { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 999px; background: #F2F0EA; border-color: #E2E0D8; color: #1A1A1A; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.wa-ed-vars button:hover { background: #E8F5EC; border-color: #0D7F3A; }
+.wa-preview { white-space: pre-wrap; background: #E8F5EC; border: 1px solid #CDE9D5; border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
+.wa-ed-actions { margin-top: 4px; flex-wrap: wrap; }
+.wa-ed-actions button { white-space: nowrap; flex: 0 0 auto; }
+.wa-ed-actions .status { flex: 1 1 200px; }

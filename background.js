@@ -77,6 +77,11 @@ chrome.tabs && chrome.tabs.onRemoved && chrome.tabs.onRemoved.addListener(functi
   lastMcOrders.delete(tabId);
 });
 
+// Clic sur l'icône de l'extension → page des paramètres (Options).
+chrome.action.onClicked.addListener(function () {
+  chrome.runtime.openOptionsPage();
+});
+
 chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   if (!message) return;
 
@@ -106,11 +111,52 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return true;
   }
 
+  if (message.type === "SAGE_LIST_ARTICLES") {
+    // Récupère la liste des articles enregistrés dans Sage 50 (via la route
+    // /articles exposée par SageBridge ≥ 1.3.0). Alimente le dropdown du
+    // picker quand un produit n'a pas de code côté boutique. Si SageBridge
+    // n'est pas lancé ou est en vieille version → renvoyer ok:false, le
+    // content script bascule sur un champ texte libre.
+    sageBridgeListArticles()
+      .then(function (res) { sendResponse(res); })
+      .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
+    return true;
+  }
+
+  if (message.type === "SAGE_VALIDATE_SHOP_KEY") {
+    // Teste la clé contre les tenants connus un par un. Le résultat ne
+    // révèle PAS quel tenant a répondu (volonté : opacité côté UI). Pour
+    // qu'un 200 soit décisif on envoie le header x-api-key ; si la clé
+    // n'est pas la bonne pour ce tenant, le serveur répond 401 et on
+    // passe au suivant.
+    const trimmed = String(message.key || "").trim();
+    if (!trimmed) {
+      sendResponse({ ok: false, error: "empty" });
+      return false;
+    }
+    const sites = Object.keys(PUBLIC_API_BY_SITE);
+    (function tryNext(i) {
+      if (i >= sites.length) return sendResponse({ ok: false });
+      const cfg = PUBLIC_API_BY_SITE[sites[i]];
+      fetch(cfg.url + "?perPage=1", {
+        method: "GET",
+        headers: { "x-api-key": trimmed, Accept: "application/json" }
+      })
+        .then(function (resp) {
+          if (resp.ok) return sendResponse({ ok: true });
+          tryNext(i + 1);
+        })
+        .catch(function () { tryNext(i + 1); });
+    })(0);
+    return true;
+  }
+
   if (message.type === "SAGE_LOOKUP_REFS") {
     const refs = Array.isArray(message.refs) ? message.refs.slice(0, 60) : [];
+    const site = message.site || "bj";
     Promise.all(
       refs.map(function (ref) {
-        return lookupBjRef(String(ref));
+        return lookupBjRef(String(ref), site);
       })
     )
       .then(function (results) {
@@ -140,31 +186,35 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return true;
   }
 
-  if (message.type === "EE_RATES") {
-    easyExpressRates(message.payload || {})
-      .then(function (data) { sendResponse({ ok: true, data: data }); })
-      .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
+  // Easy-Express (site web, sans API) : ouvre /shipping dans un nouvel onglet
+  // et garde le destinataire de la commande pour cet onglet. ee-content.js le
+  // récupère (EE_GET_PREFILL) puis le libère une fois le client sélectionné.
+  if (message.type === "OPEN_OPTIONS") {
+    if (message.hash) {
+      chrome.tabs.create({ url: chrome.runtime.getURL("options.html#" + message.hash) }, function () { sendResponse({ ok: true }); });
+    } else {
+      chrome.runtime.openOptionsPage(function () { sendResponse({ ok: true }); });
+    }
     return true;
   }
 
-  if (message.type === "EE_CHECKOUT") {
-    easyExpressCheckout(message.payload || {})
-      .then(function (data) { sendResponse({ ok: true, data: data }); })
-      .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
-    return true;
-  }
-
-  if (message.type === "EE_VALIDATE_KEY") {
-    easyExpressValidateKey(String(message.token || ""))
+  if (message.type === "OPEN_EE_SHIPPING") {
+    openEasyExpressShipping(message.payload || {})
       .then(function (res) { sendResponse(res); })
       .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
     return true;
   }
 
-  if (message.type === "OPEN_EE_FROM_ORDER") {
-    openEasyExpressFromOrder(message.payload || {})
-      .then(function (res) { sendResponse(res); })
+  if (message.type === "EE_GET_PREFILL") {
+    eeGetPrefill(sender && sender.tab ? sender.tab.id : null)
+      .then(function (data) { sendResponse({ ok: true, data: data }); })
       .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
+    return true;
+  }
+
+  if (message.type === "EE_PREFILL_DONE") {
+    eeClearPrefill(sender && sender.tab ? sender.tab.id : null)
+      .then(function () { sendResponse({ ok: true }); });
     return true;
   }
 
@@ -360,19 +410,49 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   sendResponse({ ok: false, error: "Site inconnu : " + site });
 });
 
-// ---- Résolution catégorie via l'API publique Beli & Jolie ----
+// ---- Résolution catégorie via l'API publique boutique ----
 // GET /api/public/products avec le header x-product-reference renvoie le
-// produit (catégorie + images). Les SKU marketplace de la forme
-// {REFERENCE}_{COULEUR} (Ankorstore, etc.) sont retentés avec la partie
-// avant le premier « _ » si la référence complète est introuvable.
-const BJ_PUBLIC_API = "https://beliandjolie.com/api/public/products";
-const BJ_PUBLIC_API_KEY = "kebab";
+// produit (catégorie, images, code article Sage). Chaque tenant (BJ, Issyma)
+// a son propre domaine et sa propre clé API — la fuite d'une clé n'expose
+// pas les autres. Nouveau tenant → ajouter une entrée ici.
+const PUBLIC_API_BY_SITE = {
+  bj:     { url: "https://beliandjolie.com/api/public/products", key: "kebab1" },
+  issyma: { url: "https://issyma.fr/api/public/products",        key: "kebab2" }
+};
 
-function fetchBjProduct(reference) {
-  return fetch(BJ_PUBLIC_API, {
+// Mapping clé → tenant propriétaire. Volontairement caché de l'UI : la page
+// Options montre uniquement « Connecté » ou « Mot de passe incorrect » pour
+// qu'un utilisateur ne devine pas quelle boutique est derrière quelle clé.
+// Même liste que PUBLIC_API_BY_SITE côté serveur (route.ts).
+const SHOP_KEY_TO_SITE = {
+  "kebab1": "bj",
+  "kebab2": "issyma"
+};
+
+function resolveSiteForKey(key) {
+  const trimmed = String(key || "").trim();
+  return SHOP_KEY_TO_SITE[trimmed] || null;
+}
+
+function getStoredShopKey() {
+  return new Promise(function (resolve) {
+    try {
+      chrome.storage.sync.get(["sageShopKey"], function (res) {
+        resolve((res && res.sageShopKey) ? String(res.sageShopKey).trim() : "");
+      });
+    } catch (e) {
+      resolve("");
+    }
+  });
+}
+
+function fetchShopProduct(reference, site) {
+  const cfg = PUBLIC_API_BY_SITE[site];
+  if (!cfg) return Promise.resolve(null);
+  return fetch(cfg.url, {
     method: "GET",
     headers: {
-      "x-api-key": BJ_PUBLIC_API_KEY,
+      "x-api-key": cfg.key,
       "x-product-reference": reference,
       Accept: "application/json"
     }
@@ -385,7 +465,7 @@ function fetchBjProduct(reference) {
     });
 }
 
-function shapeBjLookup(p) {
+function shapeShopLookup(p) {
   let image = null;
   if (Array.isArray(p.colors)) {
     for (const c of p.colors) {
@@ -395,18 +475,39 @@ function shapeBjLookup(p) {
       }
     }
   }
-  return { category: p.category || null, name: p.name || null, image: image };
+  return {
+    category: p.category || null,
+    name: p.name || null,
+    image: image,
+    sageArticleCode: p.sageArticleCode || null
+  };
 }
 
-function lookupBjRef(ref) {
+// Résolution du tenant cible pour un lookup catégorie.
+// - `bj` et `issyma` : l'utilisateur consulte la commande directement sur sa
+//   boutique → on connaît le tenant par l'URL, pas besoin du mot de passe.
+// - Autres sites (marketplaces : pfs, efp, mc…) : les commandes ne vivent pas
+//   dans la boutique, il faut interroger le tenant propriétaire. On lit le
+//   mot de passe saisi dans les Options et on en déduit le tenant.
+function resolveLookupSite(site) {
+  if (PUBLIC_API_BY_SITE[site]) return Promise.resolve(site);
+  return getStoredShopKey().then(function (key) {
+    return resolveSiteForKey(key);
+  });
+}
+
+function lookupBjRef(ref, site) {
   const trimmed = ref.trim();
   if (!trimmed) return Promise.resolve(null);
-  return fetchBjProduct(trimmed).then(function (json) {
-    if (json && json.product) return shapeBjLookup(json.product);
-    const base = trimmed.split("_")[0].trim();
-    if (!base || base === trimmed) return null;
-    return fetchBjProduct(base).then(function (j2) {
-      return j2 && j2.product ? shapeBjLookup(j2.product) : null;
+  return resolveLookupSite(site).then(function (targetSite) {
+    if (!targetSite) return null;
+    return fetchShopProduct(trimmed, targetSite).then(function (json) {
+      if (json && json.product) return shapeShopLookup(json.product);
+      const base = trimmed.split("_")[0].trim();
+      if (!base || base === trimmed) return null;
+      return fetchShopProduct(base, targetSite).then(function (j2) {
+        return j2 && j2.product ? shapeShopLookup(j2.product) : null;
+      });
     });
   });
 }
@@ -581,353 +682,84 @@ function viesLookup(rawVat) {
 }
 
 // ─────────────────────────────────────────────
-// Easy-Express v3 — cotation + création bordereau
-// Doc : https://easy-express.fr/storage/file/download/v3.html
-// Flux : POST /rates (transactionId + carriers) → POST /checkout (tracking + PDF)
+// Easy-Express — ouverture du site (l'API v3 a été retirée en 3.31.0 car
+// incomplète). On ouvre https://easy-express.fr/shipping dans un nouvel
+// onglet ; le destinataire est rangé dans chrome.storage.local sous
+// eeShipPrefill_<tabId> et lu par ee-content.js, qui cherche le client dans
+// le carnet d'adresses Easy-Express et le crée s'il n'existe pas.
 // ─────────────────────────────────────────────
+const EE_SHIPPING_URL = "https://easy-express.fr/shipping";
+const EE_PREFILL_TTL_MS = 30 * 60 * 1000;
 
-const EE_BASE_URL = "https://easy-express.fr";
-const EE_MAX_PARCEL_WEIGHT_KG = 25;
+function eePrefillKey(tabId) { return "eeShipPrefill_" + tabId; }
 
-function eeSplitParcels(totalKg) {
-  const total = Math.max(1, Number(totalKg) || 1);
-  if (total <= EE_MAX_PARCEL_WEIGHT_KG) return [{ weight: total }];
-  const parcels = [];
-  let remaining = total;
-  while (remaining > EE_MAX_PARCEL_WEIGHT_KG) {
-    parcels.push({ weight: EE_MAX_PARCEL_WEIGHT_KG });
-    remaining -= EE_MAX_PARCEL_WEIGHT_KG;
-  }
-  parcels.push({ weight: Math.max(1, Math.round(remaining * 100) / 100) });
-  return parcels;
-}
-
-const EE_COUNTRY_MAP = {
-  france: "FR", belgique: "BE", suisse: "CH", luxembourg: "LU",
-  allemagne: "DE", espagne: "ES", italie: "IT", "pays-bas": "NL",
-  portugal: "PT", "royaume-uni": "GB", "royaume uni": "GB",
-  "etats-unis": "US", "etats unis": "US", canada: "CA",
-  irlande: "IE", autriche: "AT", danemark: "DK", suede: "SE",
-  norvege: "NO", finlande: "FI", pologne: "PL", "republique tcheque": "CZ",
-  grece: "GR", hongrie: "HU", roumanie: "RO", bulgarie: "BG",
-  slovaquie: "SK", slovenie: "SI", croatie: "HR", estonie: "EE",
-  lettonie: "LV", lituanie: "LT", malte: "MT", chypre: "CY"
-};
-
-function eeCountryToCode(country) {
-  if (!country) return "FR";
-  const trimmed = String(country).trim();
-  if (/^[A-Z]{2}$/.test(trimmed)) return trimmed;
-  const normalized = trimmed
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "");
-  return EE_COUNTRY_MAP[normalized] || "FR";
-}
-
-function eeGetSettings() {
-  return new Promise(function (resolve) {
-    chrome.storage.sync.get(["easyExpressToken", "easyExpressSender"], function (res) {
-      resolve({
-        token: res.easyExpressToken || "",
-        sender: res.easyExpressSender || null
-      });
+async function openEasyExpressShipping(payload) {
+  const tab = await new Promise(function (resolve, reject) {
+    chrome.tabs.create({ url: EE_SHIPPING_URL, active: true }, function (t) {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(t);
     });
   });
-}
-
-function eeHeaders(token) {
-  return {
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "Authorization": "Bearer " + token
-  };
-}
-
-// Convertit une réponse "centimes" en euros avec arrondi à 2 décimales.
-function eeCentsToEuros(v) {
-  const n = Number(v) || 0;
-  return Math.round(n) / 100;
-}
-
-// Détecte défensivement un éventuel champ discount/promo renvoyé par Easy-Express.
-// La doc officielle ne liste que price + priceIncTax, mais au cas où le fournisseur
-// enrichirait la réponse plus tard, on cherche quelques noms courants.
-function eeExtractDiscount(carrier, infos) {
-  const candidates = [
-    carrier.discount, carrier.promo, carrier.promotion, carrier.reduction,
-    carrier.originalPrice, carrier.basePrice, carrier.publicPrice,
-    infos && infos.discount, infos && infos.promo, infos && infos.reduction,
-    infos && infos.originalPrice, infos && infos.basePrice, infos && infos.publicPrice
-  ];
-  for (const c of candidates) {
-    if (c != null && c !== 0 && c !== "") return c;
-  }
-  return null;
-}
-
-// Idem pour un éventuel champ assurance (prix TTC avec assurance intégrée).
-// Pas documenté par Easy-Express v3 ; on affiche uniquement si l'API renvoie
-// réellement un montant supérieur au TTC nu — zéro calcul côté extension.
-function eeExtractInsuranceTTC(carrier, infos) {
-  const candidates = [
-    carrier.priceWithInsurance, carrier.priceInsurance, carrier.insurancePrice,
-    carrier.priceIncTaxWithInsurance, carrier.priceTTCInsurance,
-    infos && infos.priceWithInsurance, infos && infos.priceInsurance, infos && infos.insurancePrice
-  ];
-  for (const c of candidates) {
-    if (c != null && c !== 0 && c !== "") return c;
-  }
-  return null;
-}
-
-async function easyExpressRates(payload) {
-  const settings = await eeGetSettings();
-  if (!settings.token) {
-    return { success: false, error: "Clé API Easy-Express non configurée. Ouvrez les options de l'extension." };
-  }
-  if (!settings.sender || !settings.sender.postalCode) {
-    return { success: false, error: "Adresse expéditeur incomplète. Ouvrez les options de l'extension." };
-  }
-
-  const body = {
-    senderAddress: {
-      countryCode: eeCountryToCode(settings.sender.country),
-      postalCode: settings.sender.postalCode
-    },
-    receiverAddress: {
-      countryCode: eeCountryToCode(payload.receiverCountry),
-      postalCode: payload.receiverZipCode || ""
-    },
-    parcels: eeSplitParcels(payload.weightKg)
-  };
-
-  const res = await fetch(EE_BASE_URL + "/api/v3/shipments/rates", {
-    method: "POST",
-    headers: eeHeaders(settings.token),
-    body: JSON.stringify(body),
-    cache: "no-store"
-  });
-
-  const text = await res.text();
-  if (!res.ok) {
-    return { success: false, error: "Easy-Express rates (" + res.status + ") : " + text.slice(0, 200) };
-  }
-
-  let data;
-  try { data = JSON.parse(text); }
-  catch { return { success: false, error: "Easy-Express rates : réponse non-JSON." }; }
-
-  const response = data.Response || {};
-  if (response.Code !== 200) {
-    const msg = typeof response.Message === "string" ? response.Message : "Erreur inconnue.";
-    return { success: false, error: "Easy-Express rates : " + msg };
-  }
-
-  const message = response.Message || {};
-  const transactionId = String(message.transactionId || "");
-  const rawCarriers = Array.isArray(message.carriers) ? message.carriers : [];
-  const parcelCount = eeSplitParcels(payload.weightKg).length;
-
-  const carriers = rawCarriers.map(function (c) {
-    const infos = c.infos || {};
-    const priceHT = eeCentsToEuros(c.price);
-    // Si l'API ne fournit pas priceIncTax, on recalcule à 20 % TVA par défaut.
-    const priceTTC = c.priceIncTax != null
-      ? eeCentsToEuros(c.priceIncTax)
-      : Math.round(priceHT * 1.2 * 100) / 100;
-
-    const discount = eeExtractDiscount(c, infos);
-    const discountHT = discount != null
-      ? (typeof discount === "number" && discount > 100 ? eeCentsToEuros(discount) : Number(discount) || 0)
-      : null;
-
-    const rawInsurance = eeExtractInsuranceTTC(c, infos);
-    const priceTTCWithInsurance = rawInsurance != null
-      ? (typeof rawInsurance === "number" && rawInsurance > 100 ? eeCentsToEuros(rawInsurance) : Number(rawInsurance) || null)
-      : null;
-
-    return {
-      carrierId: String(c.id || ""),
-      code: String(c.code || ""),
-      name: String(c.name || ""),
-      logo: String(c.logo || ""),
-      priceHT: priceHT,
-      priceTTC: priceTTC,
-      priceTTCWithInsurance: priceTTCWithInsurance,
-      discountHT: discountHT,
-      delay: String(infos.estimatedArrival || "3-5 jours"),
-      maxSize: String(infos.maximumSizeSupported || ""),
-      storage: String(infos.storageLocation || "")
-    };
-  });
-
-  return {
-    success: true,
-    transactionId: transactionId,
-    carriers: carriers,
-    parcelCount: parcelCount
-  };
-}
-
-async function easyExpressCheckout(payload) {
-  const settings = await eeGetSettings();
-  if (!settings.token) {
-    return { success: false, error: "Clé API Easy-Express non configurée." };
-  }
-  if (!settings.sender) {
-    return { success: false, error: "Adresse expéditeur non configurée." };
-  }
-
-  const sender = settings.sender;
-  const r = payload.receiver || {};
-  const weightKg = Number(payload.weightKg) || 1;
-
-  const body = {
-    transactionId: payload.transactionId,
-    carrierId: payload.carrierId,
-    shipmentRequest: {
-      parcels: eeSplitParcels(weightKg),
-      senderAddress: {
-        company: sender.company || "",
-        shopName: sender.shopName || sender.company || "",
-        email: sender.email || "",
-        phoneNumber: sender.phone || "",
-        mobileNumber: sender.phone || "",
-        street: sender.street || "",
-        complement: sender.complement || "",
-        city: sender.city || "",
-        postalCode: sender.postalCode || "",
-        countryCode: eeCountryToCode(sender.country),
-        siret: sender.siret || ""
-      },
-      receiverAddress: {
-        firstName: r.firstName || "",
-        lastName: r.lastName || "",
-        company: r.company || "",
-        shopName: "",
-        email: r.email || "",
-        phoneNumber: r.phone || "",
-        mobileNumber: r.phone || "",
-        street: r.street || "",
-        complement: r.complement || "",
-        city: r.city || "",
-        stateProvinceCode: "",
-        postalCode: r.postalCode || "",
-        countryCode: eeCountryToCode(r.country),
-        instructions: r.instructions || ""
-      }
-    }
-  };
-
-  const res = await fetch(EE_BASE_URL + "/api/v3/shipments/checkout", {
-    method: "POST",
-    headers: eeHeaders(settings.token),
-    body: JSON.stringify(body)
-  });
-
-  const text = await res.text();
-  if (!res.ok) {
-    return { success: false, error: "Easy-Express checkout (" + res.status + ") : " + text.slice(0, 200) };
-  }
-
-  let data;
-  try { data = JSON.parse(text); }
-  catch { return { success: false, error: "Easy-Express checkout : réponse non-JSON." }; }
-
-  const response = data.Response || {};
-  if (response.Code !== 200) {
-    const msg = typeof response.Message === "string" ? response.Message : "Erreur inconnue.";
-    return { success: false, error: "Easy-Express checkout : " + msg };
-  }
-
-  const message = response.Message || {};
-  const parcels = Array.isArray(message.parcels) ? message.parcels : [];
-  const first = parcels[0] || {};
-  const trackingId = String(first.tracking || "");
-  const labelUrl = String(message.labels || first.ticket || "");
-
-  if (!labelUrl) {
-    return { success: false, error: "Easy-Express : URL du bordereau absente de la réponse." };
-  }
-
-  return {
-    success: true,
-    trackingId: trackingId,
-    labelUrl: labelUrl,
-    parcels: parcels
-  };
-}
-
-// ─────────────────────────────────────────────
-// Ouverture du popup pré-rempli depuis une commande marketplace.
-// Appelé par content.js après extraction de l'adresse de livraison.
-// On stocke le prefill dans chrome.storage.local puis on ouvre popup.html
-// en fenêtre standalone (chrome.windows.create) — un content script ne peut
-// pas déclencher chrome.action.openPopup() directement.
-// ─────────────────────────────────────────────
-async function openEasyExpressFromOrder(payload) {
   const prefill = {
-    receiver: payload && payload.receiver ? payload.receiver : {},
-    orderNo: (payload && payload.orderNo) || "",
-    source: (payload && payload.source) || "order",
+    receiver: payload.receiver || {},
+    orderNo: payload.orderNo || "",
+    parcelValue: payload.parcelValue || null,
     timestamp: Date.now()
   };
   await new Promise(function (resolve) {
-    chrome.storage.local.set({ eePrefill: prefill }, function () { resolve(); });
-  });
-  await new Promise(function (resolve, reject) {
-    chrome.windows.create(
-      {
-        url: chrome.runtime.getURL("popup.html?from=order"),
-        type: "popup",
-        width: 460,
-        height: 760,
-        focused: true
-      },
-      function (win) {
-        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-        else resolve(win);
-      }
-    );
+    const o = {}; o[eePrefillKey(tab.id)] = prefill;
+    chrome.storage.local.set(o, function () { resolve(); });
   });
   return { ok: true };
 }
 
-async function easyExpressValidateKey(token) {
-  if (!token) return { ok: false, error: "Jeton vide." };
-  // Easy-Express n'expose pas d'endpoint /me documenté : on fait une cotation
-  // minimale (FR → FR, 1 kg) qui sert de ping. 401/403 = jeton invalide.
-  try {
-    const res = await fetch(EE_BASE_URL + "/api/v3/shipments/rates", {
-      method: "POST",
-      headers: eeHeaders(token),
-      body: JSON.stringify({
-        senderAddress: { countryCode: "FR", postalCode: "75001" },
-        receiverAddress: { countryCode: "FR", postalCode: "75002" },
-        parcels: [{ weight: 1 }]
-      })
-    });
-    if (res.status === 401 || res.status === 403) {
-      return { ok: false, error: "Jeton refusé par Easy-Express (401/403)." };
-    }
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = null; }
-    const code = data && data.Response && data.Response.Code;
-    if (code === 200) return { ok: true };
-    // 200 HTTP + code applicatif non-200 : jeton accepté mais payload refusé — on
-    // considère que le jeton est valide (c'est l'adresse qui coince, pas lui).
-    if (res.ok) return { ok: true };
-    return { ok: false, error: "Ping Easy-Express (" + res.status + ")." };
-  } catch (err) {
-    return { ok: false, error: (err && err.message) || String(err) };
+async function eeGetPrefill(tabId) {
+  if (tabId == null) return null;
+  const key = eePrefillKey(tabId);
+  const res = await new Promise(function (resolve) { chrome.storage.local.get([key], resolve); });
+  const p = res && res[key];
+  if (!p) return null;
+  if (Date.now() - (p.timestamp || 0) > EE_PREFILL_TTL_MS) {
+    await eeClearPrefill(tabId);
+    return null;
   }
+  return p;
 }
 
+function eeClearPrefill(tabId) {
+  return new Promise(function (resolve) {
+    if (tabId == null) return resolve();
+    chrome.storage.local.remove([eePrefillKey(tabId)], function () { resolve(); });
+  });
+}
+
+// Nettoyage : un onglet fermé avant la fin ne laisse pas de destinataire orphelin.
+chrome.tabs.onRemoved.addListener(function (tabId) { eeClearPrefill(tabId); });
 
 // ─── SageBridge (création directe dans Sage 50) ───────────────────────────
 const SAGE_BRIDGE_URL = "http://127.0.0.1:8765";
+
+async function sageBridgeListArticles() {
+  const controller = new AbortController();
+  const timer = setTimeout(function () { controller.abort(); }, 15000);
+  let response;
+  try {
+    response = await fetch(SAGE_BRIDGE_URL + "/articles", {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    return { ok: false, unreachable: true, error: (err && err.message) || String(err) };
+  }
+  clearTimeout(timer);
+  if (!response.ok) return { ok: false, error: "HTTP " + response.status };
+  let data = null;
+  try { data = await response.json(); } catch (e) { return { ok: false, error: "JSON illisible" }; }
+  if (!Array.isArray(data)) return { ok: false, error: "Format inattendu" };
+  return { ok: true, articles: data };
+}
 
 async function sageBridgeCreate(payload) {
   const controller = new AbortController();

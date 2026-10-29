@@ -18,6 +18,16 @@ Supported sites (`site` codes used throughout the code):
 - `bm` — www.bijouxmysteres.fr (Bijoux Mystères — own admin, via `/admin/commandes/{oid}`). API on a different subdomain (`server.bijouxmysteres.fr`), not same-origin.
 - `issyma` — issyma.fr / www.issyma.fr (Issyma — second tenant on the **same** Next.js codebase as Beli & Jolie, deployed multi-tenant on the same VPS/DB). Same admin URL (`/admin/commandes/{cuid}`), same API contract (`/api/admin/commandes/{id}/regroup`), same admin DOM — server-side tenant is resolved by the middleware from the request host, so an admin session on issyma.fr only sees Issyma orders. Kept as a distinct `site` code (not merged into `bj`) so (a) the Sage manual-picker storage keys (`site + "|" + ref`) don't collide across shops and (b) the BJ public-products lookup is skipped for Issyma refs — see Sage section.
 
+Besides the aggregated table, the modal footer also offers (details in the dedicated sections below):
+- **Créer dans Sage** / **Exporter CSV Sage** — provisional invoice in Sage 50 via the local SageBridge program, or a CSV import file.
+- **Exporter en PDF**.
+- **Afficher la liste des transporteurs sur Easy Express** — opens easy-express.fr/shipping in a new tab, finds the customer in the Easy Express address book (or creates it) and selects it as recipient. No Easy Express API anymore (removed in 3.31.0).
+- **WhatsApp** — free message or editable message templates (system templates + user templates, managed in the Options page), copied to the clipboard and opened in `wa.me`.
+
+Clicking the extension icon opens the **Options page** (WhatsApp shop name + templates, shop password for the Sage category lookup).
+
+**Version history (recent)** : 3.30.1 multi-tenant Sage picker · 3.31.0 Easy Express API removed → website flow · 3.32.0 WhatsApp button · 3.33.0 editable WhatsApp templates · 3.33.1 icon click opens the Options page.
+
 ## Developing & loading
 
 There is no build. To test changes: `chrome://extensions` → enable Developer mode → "Load unpacked" → select this folder. After editing, click the reload icon on the extension card; for `content.js` / `modal.css` changes also reload the order page. For `background.js` changes use the "service worker" link on the card to inspect the worker.
@@ -54,6 +64,10 @@ Three layers, talking via `chrome.runtime` messages and (for PFS / Shopify / MC 
 6. **`injected-shopify.js`** (Shopify, declared in `web_accessible_resources`) — same page-world pattern as PFS's `injected.js`, but sniffs the `X-CSRF-Token` request header on calls to `admin.shopify.com/api/`. Patches both `fetch` and `XMLHttpRequest.setRequestHeader`, forwards the token via `window.postMessage({ source: "shopify-regroup", type: "CSRF_TOKEN", token })`. Content script caches in `cachedShopifyCsrf` and also has a DOM fallback (`getShopifyCsrfToken` reads `<meta name="csrf-token">` / `<input name="authenticity_token">`). Same UX consequence as PFS / Faire: navigate the Shopify admin once so a CSRF-bearing request fires before clicking the button, otherwise the "Jeton CSRF Shopify pas encore capté…" error is shown.
 
 7. **`injected-bm.js`** (Bijoux Mystères, declared in `web_accessible_resources`) — page-world script, but unlike the other injected scripts it does **not** intercept anything at page load. Instead it listens for `window.postMessage({ source: "bm-regroup", type: "FETCH_ORDER", orderId, requestId })` from the content script and **performs the actual API fetch** to `server.bijouxmysteres.fr/api/orders/{id}` from the page context (so cookies for `.bijouxmysteres.fr` flow same-site and the ACAO=* + credentials CORS restriction doesn't apply). It replies with `window.postMessage({ source: "bm-regroup", type: "FETCH_ORDER_RESULT", requestId, ok, data|error })`. The content script correlates request/response via `requestId` (via the `bmPendingFetches` Map) and uses a 15 s timeout in case the injected script never loads.
+
+8. **`ee-content.js` + `injected-ee.js`** (Easy Express, `easy-express.fr/shipping*`) — content script that fetches the recipient stored by the service worker for this tab (`EE_GET_PREFILL`) and hands it to the page-world script, which drives the Easy Express Vue app (`appObj`) to find/create/select the customer. See the « Easy-Express » section.
+
+9. **`wa-templates.js`** — shared WhatsApp templates (defaults + storage helpers), loaded before `content.js` in both content-script entries and before `options.js` in `options.html`. See the « WhatsApp » section.
 
 The content script also exposes an `isExtensionContextAlive()` guard (`chrome.runtime?.id`) at the top of both click handlers, and wraps every `chrome.runtime.sendMessage` in a synchronous `try/catch`. This is because when the extension is reloaded while a tab is still open, the old content script keeps running but `chrome.runtime.sendMessage` throws synchronously with "Extension context invalidated". The guard surfaces a clear "L'extension a été rechargée. Rechargez la page (F5)…" message instead of an uncaught exception in the errors pane.
 
@@ -180,48 +194,61 @@ Contraintes d'exploitation découvertes le 19/10/2026 : **Sage 50 doit être ouv
 
 **Extension 3.25.2** : plus de `reference` dans le payload (Référence de facture vide). **3.25.1** : délai du fetch `sageBridgeCreate` porté à 150 s (SageBridge borne Sage à 120 s) ; un dépassement renvoie `{ timeout: true }` → message « vérifiez dans Sage si la facture a été créée » (au lieu de « SageBridge ne répond pas ») ; message « lancez SageBridge (menu Démarrer ou raccourci du Bureau) » ; préfixe d'erreur « Facture non créée : » (l'erreur ne vient pas toujours de Sage).
 
-## Easy-Express (raccourci bordereau d'expédition)
+### Multi-tenant boutique (3.28.0 → 3.30.1 — 28–29/10/2026)
 
-Depuis 3.21.0 l'extension expose un **popup** (icône dans la barre Chrome) et une **page options** pour générer un bordereau Easy-Express sans sortir du navigateur. 3.22.0 branche le popup sur le modal de regroupement : un bouton « Bordereau Easy-Express » dans le footer ouvre le popup pré-rempli avec l'adresse de livraison de la commande.
+**Pourquoi** : Boris souhaite partager l'extension et SageBridge à des proches qui ont leur propre dossier Sage et leur propre catalogue (premier cas : son associé **Issyma-Forcyma**, autre tenant de la même app Next.js que Beli & Jolie). Les 19 codes articles `ART0001…ART0019` et les règles bijouterie étaient figés dans le code — refonte pour que la **boutique** soit l'unique source du mapping produit → code article Sage.
 
-**Fichiers** : `popup.html` + `popup.js` + `popup.css` (icône action) ; `options.html` + `options.js` + `options.css` (`options_ui.open_in_tab: true`). Handlers service worker dans `background.js` : `EE_RATES`, `EE_CHECKOUT`, `EE_VALIDATE_KEY`, `OPEN_EE_FROM_ORDER`, `ANNUAIRE_LOOKUP`.
+**Côté boutique (`beli-jolie`)** : nouveaux champs `Category.sageArticleCode` et `SubCategory.sageArticleCode` remplis dans l'admin via une carte « Sage » dans la fiche catégorie (combobox qui fetch `/articles` de SageBridge local, voir CLAUDE.md du projet). L'API publique `/api/public/products` est désormais ouverte aux tenants `beliandjolie` et `issyma` avec clé par tenant (`kebab1`, `kebab2`), et renvoie `sageArticleCode` déjà résolu par le serveur (cascade sous-catégorie > catégorie).
 
-**Stockage** (`chrome.storage.sync`) :
-- `easyExpressToken` : jeton Bearer récupéré sur `easy-express.fr/membre/me → Afficher mon AccessToken`.
-- `easyExpressSender` : `{company, shopName, siret, email, phone, street, complement, postalCode, city, country}`. Pré-rempli par défaut avec Beli & Jolie (90 rue de la Haie Coq, 93300 Aubervilliers, 07 82 75 81 58) à la première ouverture des options.
-- Brouillon destinataire du popup dans `chrome.storage.local[eeDraftReceiver]` (persiste entre deux ouvertures tant qu'un bordereau n'a pas été généré).
-- `chrome.storage.local[eePrefill]` : payload temporaire déposé par le service worker juste avant d'ouvrir une fenêtre popup depuis le modal, consommé puis effacé au premier `init()` du popup.
+**Côté extension** :
 
-**API Easy-Express** (doc `/storage/file/download/v3.html`, base `https://easy-express.fr`) :
-- Validation du jeton : ping `POST /api/v3/shipments/rates` (FR 75001 → FR 75002, 1 kg). 401/403 = refusé. HTTP 200 (quel que soit `Response.Code`) = accepté — on considère qu'un code applicatif non-200 vient de l'adresse, pas du jeton.
-- Cotation : `POST /api/v3/shipments/rates` → `Response.Message = { transactionId, carriers: [{id, code, name, logo, price, priceIncTax, infos: {estimatedArrival, maximumSizeSupported, storageLocation}}] }`. `price` et `priceIncTax` sont en **centimes HT / TTC** (÷100 avant affichage). Si `priceIncTax` est absent le TTC est recalculé à `priceHT × 1.2`.
-- Création : `POST /api/v3/shipments/checkout` avec `transactionId` + `carrierId` + `shipmentRequest.{parcels, senderAddress, receiverAddress}`. Retour : `Response.Message = { labels, parcels: [{tracking, ticket}] }`. On préfère `message.labels` (PDF combiné de tous les colis) puis `parcels[0].ticket`. Le PDF s'ouvre automatiquement dans un nouvel onglet (`chrome.tabs.create`).
+- `background.js` : `PUBLIC_API_BY_SITE = { bj: { url: beliandjolie.com, key: kebab1 }, issyma: { url: issyma.fr, key: kebab2 } }`. Les sites directs (`bj` / `issyma`) utilisent leur config dédiée (connue par l'URL de la commande). Les marketplaces (pfs, efp, mc, aks, faire, oc, bm, shopify) interrogent le tenant **déduit du mot de passe stocké** via `SHOP_KEY_TO_SITE` (hidden map, pas affiché dans l'UI). Nouveau handler `SAGE_LIST_ARTICLES` → `sageBridgeListArticles()` qui GET `http://127.0.0.1:8765/articles` (SageBridge ≥ 1.3.0). Nouveau handler `SAGE_VALIDATE_SHOP_KEY` qui teste la clé contre les 2 tenants et renvoie `ok:true/false` sans dire lequel.
+- **Page Options** (`options.html` / `options.js`) : nouveau champ password **« Mot de passe boutique »** (storage `sageShopKey`, chrome.storage.sync). Bouton « Vérifier » affiche uniquement **« ✓ Connecté »** / **« ✗ Mot de passe incorrect »** — jamais le nom du tenant (`kebab1` → BJ, `kebab2` → Issyma reste caché volontairement).
+- `content.js` **mode bridge** (`_sageMode === "bridge"`) : purge totale du pipeline bijouterie. Plus de `sageArticleForCategory`, plus d'exceptions joncs / présentoirs garnis. Un produit sans `sageArticleCode` côté boutique passe par le picker — pas de code deviné. **Mode CSV inchangé** (regex bijouterie conservée, hors scope de la refonte, Boris n'utilise que peu le CSV).
+- **Bouton « Créer dans Sage »** (`#pfs-sage-direct-btn`) masqué si la commande vient d'une marketplace et qu'aucun `sageShopKey` n'est stocké. Sites directs `bj` / `issyma` : toujours visible (tenant connu par l'URL).
+- **Picker** (`showSagePicker`, async) : en mode bridge, fetche `SAGE_LIST_ARTICLES` au montage et affiche un dropdown avec la **liste réelle** des articles Sage 50 — plus de `SAGE_ARTICLES` figée. Pour chaque produit non résolu, un bouton **« Régler sur ma boutique ↗ »** ouvre `https://{boutique}/admin/categories` dans un onglet (recommandé : code valable pour toutes les prochaines commandes). Si SageBridge ne répond pas, repli sur champ texte libre + message d'erreur **explicite** (depuis 3.30.1 : « Cause : HTTP 400 », « Service worker : … », etc. — plus de message générique).
 
-**Poids > 25 kg** : auto-split via `eeSplitParcels` (plafond unique à 25 kg pour rester compatible FedEx/UPS 25, Chrono/GLS/DPD 30, Colissimo Inter 20). Code identique à `lib/easy-express.ts` côté Beli & Jolie.
+**Historique de versions** :
+- **3.28.0** (28/10) : routes publiques multi-tenant (BJ + Issyma, clés par site codées en dur dans `PUBLIC_API_BY_SITE`).
+- **3.29.0** (28/10) : page Options avec `sageShopKey` + handler `SAGE_VALIDATE_SHOP_KEY` opaque.
+- **3.30.0** (29/10) : purge pipeline bijouterie (bridge seul), bouton masqué, picker avec liste Sage live + lien admin boutique.
+- **3.30.1** (29/10) : messages d'erreur explicites du picker (fin de « SageBridge n'a pas répondu » générique).
 
-**Pays** : `eeCountryToCode` convertit un nom FR courant (France, Belgique, Suisse…) ou un code ISO 2 lettres en code ISO. Fallback silencieux à `FR` si inconnu (comportement voulu — Easy-Express renverra une erreur explicite si le code n'est pas supporté pour la cotation).
+## Easy-Express (site web, plus d'API)
 
-**Affichage prix côté popup** :
-1. HT = `price / 100`, TTC = `priceIncTax / 100`. Toujours affichés.
-2. Assurance : **la cotation Easy-Express v3 ne contient aucun champ assurance** (vérifié sur doc v3). Zéro calcul côté extension — `eeExtractInsuranceTTC` cherche défensivement `priceWithInsurance` / `priceInsurance` / `insurancePrice` / `priceIncTaxWithInsurance` / `priceTTCInsurance` (racine carrier ou sous `infos`), au cas où Easy-Express enrichirait la réponse. **Rien affiché si le champ n'existe pas** (choix cliente 3.22.0 : plus de calcul ad valorem configurable — « Je ne sais pas à quoi il sert »).
-3. Réduction : la doc v3 ne liste pas de champ promo/discount. `eeExtractDiscount` cherche défensivement `discount`/`promo`/`promotion`/`reduction`/`originalPrice`/`basePrice`/`publicPrice` (racine carrier **ou** sous `infos`). Si trouvé et `> priceHT`, un badge vert « Réduction : -X,XX € » apparaît, avec le prix public en tooltip. Jamais vu live au 2026-10-09, à surveiller si Easy-Express enrichit sa réponse.
+**3.31.0 (29/10/2026)** : l'intégration API Easy-Express v3 (popup de cotation + création de bordereau, jeton Bearer, expéditeur dans les options) a été **supprimée** à la demande de Boris — l'API est incomplète. Fichiers retirés : `popup.html`, `popup.js`, `popup.css` ; handlers `EE_RATES`, `EE_CHECKOUT`, `EE_VALIDATE_KEY`, `OPEN_EE_FROM_ORDER` ; popup de la clé `action` du manifest (depuis 3.33.1, `action` sans popup : un clic sur l'icône ouvre la page Options via `chrome.action.onClicked`) ; sections « Clé API » et « Expéditeur » de la page Options (qui ne garde que le mot de passe boutique et efface `easyExpressToken` / `easyExpressSender` / `eePrefill` / `eeDraftReceiver` à l'ouverture). `ANNUAIRE_LOOKUP` / `VIES_LOOKUP` restent (utilisés par le flux Sage).
 
-**Flux « depuis une commande marketplace »** (3.22.0) :
-1. L'utilisateur clique sur « Regrouper la facture », le modal s'affiche avec `orderInfo.addresses`.
-2. Dans le footer du modal, le bouton `#pfs-ee-btn` apparaît si au moins une adresse non vide est présente (sinon masqué). Il est stylé en noir plein (vs. blanc des exports) pour qu'il saute aux yeux.
-3. Clic → `openEasyExpressFromOrder()` dans `content.js` : extrait les champs du **premier bloc dont le titre contient « livraison »** (sinon premier bloc disponible, utile pour PFS/EFP qui n'exposent que la facturation), via `eeFieldByLabel(fields, patterns)` qui cherche `"société"`/`"adresse"`/`"code postal"`/`"ville"`/`"pays"`/`"téléphone"`/`"email"`/`"contact"` dans les labels (insensible à la casse, `.indexOf` donc partial match toléré). Nom séparé via `eeSplitContact` (premier mot → firstName, reste → lastName).
-4. `chrome.runtime.sendMessage({ type: "OPEN_EE_FROM_ORDER", payload: { receiver, orderNo, source: "order" } })` → service worker.
-5. Service worker : `openEasyExpressFromOrder(payload)` stocke le payload dans `chrome.storage.local[eePrefill]` puis `chrome.windows.create({ url: "popup.html?from=order", type: "popup", width: 460, height: 760 })`. **Pas de permission `windows` nécessaire** — `chrome.windows.create` est accessible sans déclaration MV3.
-6. La fenêtre popup s'ouvre, `popup.js::init()` détecte `?from=order`, charge `eePrefill`, remplit les champs via `fillReceiver(r)`, appelle `flagMissingFields()` (ajoute la classe `.needs-review` fond jaune pâle sur `r_street`/`r_postalCode`/`r_city`/`r_country` et sur `r_lastName`+`r_company` si les deux sont vides) et affiche la bannière `#prefillBanner` :
-   - Variante orange (défaut) si des champs manquent : « Pré-rempli depuis la commande "N°" — Champs à compléter : adresse, code postal, … ».
-   - Variante verte (`.ok`) si tout est présent : « Toutes les informations livraison semblent complètes. Vérifiez puis calculez les tarifs. »
-7. Le flag `.needs-review` tombe au premier `input` sur le champ. Après remplissage, `eePrefill` est effacé pour que la prochaine ouverture reparte propre.
+**Nouveau flux** — bouton **« Afficher la liste des transporteurs sur Easy Express »** (`#pfs-ee-btn`, footer du modal, visible si la commande a au moins une adresse) :
 
-**Annuaire des entreprises** (`https://recherche-entreprises.api.gouv.fr/search`) : API publique DINUM sans auth. `annuaireLookup(query, kind)` prend un SIRET (14 chiffres) ou un SIREN (9), renvoie `{found, siren, siret, denomination, adresse, codePostal, commune, adresseLigne, etatAdministratif, activiteCode, activiteLibelle, tva}`. `tvaFromSiren` calcule la clé INSEE `((12 + 3*(SIREN mod 97)) mod 97)` pour reconstituer le n° de TVA intracommunautaire. Utilisé dans options (pré-remplir l'expéditeur) **et** dans le popup (pré-remplir le destinataire B2B).
+1. `content.js::openEasyExpressFromOrder()` extrait le destinataire (`eeExtractReceiverFromOrder` : bloc « livraison » sinon premier bloc ; société, contact, adresse, complément, CP, ville, pays, téléphone, email, SIRET, TVA) et la valeur du colis (= total HT du regroupement), puis envoie `OPEN_EE_SHIPPING`.
+2. `background.js::openEasyExpressShipping` ouvre `https://easy-express.fr/shipping` dans un **nouvel onglet** et range le payload sous `chrome.storage.local["eeShipPrefill_<tabId>"]` (TTL 30 min, effacé à la fermeture de l'onglet ou sur `EE_PREFILL_DONE`).
+3. `ee-content.js` (content script sur `easy-express.fr/shipping*`) demande `EE_GET_PREFILL` (clé = `sender.tab.id`) ; si un destinataire existe, il injecte `injected-ee.js` dans le page world et lui passe les données par `postMessage` (`source: "ee-regroup-ext"` → page, `source: "ee-regroup"` ← page).
+4. `injected-ee.js` pilote l'application Vue de la page (`appObj`, globale déclarée par le script inline de /shipping) :
+   - attend `appObj.cneeAddrs` (carnet des destinataires chargé par la page : `{ukey, company, country, city, postcode, street, email, mobile, residence, region}`) ;
+   - **recherche** un client avec la même société + adresse + CP + ville + pays + téléphone + email (comparaison sans accents/majuscules/ponctuation, téléphone sur les 9 derniers chiffres, pays converti en code ISO via les libellés du `<select>` pays du formulaire `#ae96532` + alias EN). Un champ vide côté commande est ignoré ;
+   - **trouvé** → sélection via `$(appObj.$refs.cneeOpts).val(ukey).trigger("change")` (déclenche `appObj.oncnee()` → POST `/shipping/v2/oncnee`) ;
+   - **absent** → `appObj.model = Object.assign(GetBook(), {role: 0 (Destinataire), residence: 0 (Professionnel), company, firstname, lastname, street, building, postcode, city, country, mobile, email, siret, vat_number})` puis `appObj.newadr()` (validation de la page + POST `/shipping/v2/addBook`), attente de la nouvelle `ukey` dans `cneeAddrs`, puis sélection ;
+   - si société/adresse/CP/ville/téléphone/email manquent, ou si Easy Express refuse la création (20 s), le formulaire « Ajouter une adresse » s'ouvre **pré-rempli** ; le client enregistré à la main est ensuite sélectionné automatiquement (surveillance 15 min) ;
+   - une fois le client sélectionné : `appObj.parcel.objValue` = total HT (si vide), défilement + focus sur « Poids (kg) ». Boris saisit le poids puis « Ajouter le colis » → la page affiche les transporteurs.
+   - Bandeau d'état fixe en bas à gauche (DOM pur, pas d'`innerHTML`).
 
-**Sécurité DOM** : popup rendu via le helper local `el(tag, props, children)` — jamais d'`innerHTML` (hook de sécurité du dev env le bloquerait, cf. note `modal.css` plus haut).
+**Endpoints internes Easy Express observés** (session navigateur, pas de jeton) : `POST /membre/v2/books?p=N` `{searchBy, alf}` (carnet paginé, 20/page), `POST /shipping/v2/addBook` (modèle `GetBook()`), `POST /shipping/v2/oncnee`, `/shipping/v2/offers` (liste des transporteurs). Le script s'appuie sur `appObj` plutôt que sur ces endpoints : si Easy Express renomme `appObj`, `cneeAddrs`, `$refs.cneeOpts`, `newadr`, `GetBook` ou l'id `#ae96532`, c'est `injected-ee.js` qu'il faut adapter.
 
-**Point de vigilance refactor** : si la doc Easy-Express v3 évolue et renomme `price` → `priceExTax` (ou similaire), seule `easyExpressRates` dans `background.js` est à modifier (la lib Beli & Jolie côté serveur fait pareil mais dans un codebase séparé — ne pas supposer que les deux restent synchrones).
+## WhatsApp (3.32.0 — 29/10/2026)
+
+Bouton vert **« WhatsApp »** (`#pfs-wa-btn`) dans le footer du modal, inspiré de `components/admin/users/PhoneContactIcons.tsx` du projet beli-jolie (lien `wa.me/<numéro>?text=…`, pas d'emoji car WhatsApp Desktop les casse via `?text=`).
+
+- Panneau `#pfs-wa-overlay` / `#pfs-wa-panel` (code dans `content.js`, bloc « WhatsApp », fonctions `openWhatsAppPanel`, `renderWaMenu`, `renderWaEditor`) :
+  - **Numéro** pré-rempli depuis la commande (bloc livraison, sinon n'importe quel champ téléphone), modifiable. `waToNumber` : `+…`/`00…` gardés, `0…` → indicatif du pays de la commande (`WA_DIAL_CODES`, défaut 33).
+  - **« Envoyer un message »** : ouvre la conversation sans texte.
+  - **10 modèles** (`WA_TEMPLATES`, groupes « Première commande » / « Client habitué ») : lien de paiement, virement (RIB), rupture de stock (paiement lien/virement ou proposition de remplacements), retrait en boutique.
+  - Variables : `{company}` = Options → « WhatsApp — nom de la boutique » (`chrome.storage.sync.waShopName`), sinon le texte `{company}` reste visible ; `{plateforme}` = marketplace de la commande (`WA_PLATFORM_NAMES`, « notre site » pour bj/issyma/shopify) ; `{transporteur}` = puces rapides (`WA_CARRIERS`) ou saisie libre, dernier choix mémorisé (`chrome.storage.local.waLastCarrier`) ; `{adresse}` = adresse de livraison de la commande (modifiable).
+  - Le message est éditable ; « Copier et ouvrir WhatsApp » copie dans le presse-papiers puis ouvre `wa.me` dans un nouvel onglet.
+- `background.js` : handler `OPEN_OPTIONS` (`chrome.runtime.openOptionsPage`, ou `options.html#<hash>` dans un onglet si `hash` est fourni).
+
+**3.33.0 — modèles modifiables** : les modèles vivent dans **`wa-templates.js`**, chargé avant `content.js` (content scripts) et avant `options.js` (page Options). `WA_DEFAULT_TEMPLATES` (ids `sys-…`), `WA_VARIABLES` (`{company}`, `{transporteur}`, `{adresse}`, `{plateforme}`, `{client}`, `{commande}` ; `{boutique}` reste accepté comme ancien nom de `{company}`), `waMergeTemplates(store)`. Stockage `chrome.storage.local.waTemplates = { overrides: { <idSys>: {group,title,body} }, custom: [{id:"custom-<ts>", group, title, body}] }` (local et non sync : limite 8 Ko par clé en sync).
+- Page Options, carte **« Modèles WhatsApp »** (`#whatsapp`) : liste groupée, badges « Modifié » / « Personnalisé », Modifier, **Remettre par défaut** (modèle système modifié), Supprimer (modèle perso), **+ Nouveau modèle**, **Tout remettre par défaut** (efface les overrides, garde les persos). Éditeur : groupe (datalist), titre, message, puces d'insertion des variables, aperçu avec valeurs d'exemple. Pas d'emoji. Un modèle système réenregistré identique à l'original supprime son override. `options.html#tpl=<id>` ouvre directement l'éditeur de ce modèle (lien « Modifier ce modèle » du panneau). Le nom de la boutique (`waShopName`) s'enregistre au changement.
+- Panneau du modal : charge `waTemplates` à chaque ouverture, lien « Modifier ou créer des modèles ».
 
 ### Hidden behavior (Easter egg)
 

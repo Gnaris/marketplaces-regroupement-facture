@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.27.0",
+  "version": "3.33.1",
   "permissions": ["storage"],
-  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères + Issyma. Génère aussi des bordereaux Easy-Express et crée les factures provisoires dans Sage 50 (via SageBridge).",
+  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères + Issyma. Ouvre Easy Express avec le client sélectionné (ou créé) dans le carnet d'adresses, envoie des messages WhatsApp à partir de modèles et crée les factures provisoires dans Sage 50 (via SageBridge).",
   "host_permissions": [
     "https://wholesaler.parisfashionshops.com/*",
     "https://wholesaler-api.parisfashionshops.com/*",
@@ -28,8 +28,7 @@
     "http://127.0.0.1:8765/*"
   ],
   "action": {
-    "default_title": "Easy-Express — Générer un bordereau",
-    "default_popup": "popup.html"
+    "default_title": "Regroupement facture — Paramètres"
   },
   "options_ui": {
     "page": "options.html",
@@ -54,9 +53,14 @@
         "https://www.issyma.fr/admin/commandes/*",
         "http://localhost:3000/admin/commandes/*"
       ],
-      "js": ["content.js"],
+      "js": ["wa-templates.js", "content.js"],
       "css": ["modal.css"],
       "run_at": "document_start"
+    },
+    {
+      "matches": ["https://easy-express.fr/shipping*"],
+      "js": ["ee-content.js"],
+      "run_at": "document_idle"
     },
     {
       "matches": [
@@ -64,7 +68,7 @@
         "https://mc2-h5.dokkr.net/*"
       ],
       "all_frames": true,
-      "js": ["content.js"],
+      "js": ["wa-templates.js", "content.js"],
       "css": ["modal.css"],
       "run_at": "document_start"
     }
@@ -85,6 +89,10 @@
     {
       "resources": ["injected-shopify.js"],
       "matches": ["https://admin.shopify.com/*"]
+    },
+    {
+      "resources": ["injected-ee.js"],
+      "matches": ["https://easy-express.fr/*"]
     },
     {
       "resources": ["injected-bm.js"],

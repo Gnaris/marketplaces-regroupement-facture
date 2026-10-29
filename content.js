@@ -1820,7 +1820,8 @@
 
     const footer = el("div", { id: "pfs-modal-footer" }, [
       imgStrip,
-      el("button", { id: "pfs-ee-btn", type: "button", text: "Bordereau Easy-Express", onClick: function () { openEasyExpressFromOrder(); } }),
+      el("button", { id: "pfs-wa-btn", type: "button", text: "WhatsApp", title: "Envoyer un message WhatsApp au client", onClick: function () { openWhatsAppPanel(); } }),
+      el("button", { id: "pfs-ee-btn", type: "button", text: "Afficher la liste des transporteurs sur Easy Express", onClick: function () { openEasyExpressFromOrder(); } }),
       el("button", { id: "pfs-sage-direct-btn", type: "button", text: "Créer dans Sage", onClick: function () { _sageMode = "bridge"; exportToSageCsv(); } }),
       el("button", { id: "pfs-sage-btn", type: "button", text: "Exporter CSV Sage", onClick: function () { _sageMode = "csv"; exportToSageCsv(); } }),
       el("button", { id: "pfs-pdf-btn", type: "button", text: "Exporter en PDF", onClick: exportToPdf }),
@@ -1973,15 +1974,38 @@
       if (sageBtn) sageBtn.style.display = "none";
       if (sageDirectBtn) sageDirectBtn.style.display = "none";
       if (eeBtn) eeBtn.style.display = "none";
+      const waBtnErr = document.getElementById("pfs-wa-btn");
+      if (waBtnErr) waBtnErr.style.display = "none";
       return;
     }
     if (pdfBtn) pdfBtn.style.display = "";
     if (sageBtn) sageBtn.style.display = "";
-    if (sageDirectBtn) { sageDirectBtn.style.display = ""; sageDirectBtn.disabled = false; sageDirectBtn.textContent = "Créer dans Sage"; }
+    if (sageDirectBtn) {
+      sageDirectBtn.disabled = false;
+      sageDirectBtn.textContent = "Créer dans Sage";
+      // Le bouton « Créer dans Sage » n'apparaît que si l'on sait quel tenant
+      // interroger pour les codes articles :
+      //  - Sites directs boutique (bj, issyma) → connus par l'URL, toujours OK.
+      //  - Sites marketplaces (pfs, efp, mc, aks, faire, oc, bm, shopify) →
+      //    exige un mot de passe boutique configuré dans Options (dont la
+      //    valeur sélectionne BJ ou Issyma côté serveur). Pas de mot de passe
+      //    = pas de création Sage (évite d'écrire une facture sans codes).
+      const directSite = site === "bj" || site === "issyma";
+      sageDirectBtn.style.display = "none";
+      if (directSite) {
+        sageDirectBtn.style.display = "";
+      } else {
+        chrome.storage.sync.get(["sageShopKey"], function (res) {
+          if (res && res.sageShopKey) sageDirectBtn.style.display = "";
+        });
+      }
+    }
     // Easy-Express : visible seulement si on a au moins une adresse à proposer.
     const hasAddress = Array.isArray(state.orderInfo && state.orderInfo.addresses)
       && state.orderInfo.addresses.some(function (a) { return a && Array.isArray(a.fields) && a.fields.length; });
     if (eeBtn) eeBtn.style.display = hasAddress ? "" : "none";
+    const waBtn = document.getElementById("pfs-wa-btn");
+    if (waBtn) waBtn.style.display = "";
 
     const rows = state.rows || [];
     const orderInfo = state.orderInfo || {};
@@ -2092,10 +2116,15 @@
       country: eeFieldByLabel(fields, ["pays"]) || "France",
       phone: eeFieldByLabel(fields, ["téléphone", "telephone", "tél", "tel"]),
       email: eeFieldByLabel(fields, ["email", "e-mail", "courriel"]),
+      siret: eeFieldByLabel(fields, ["siret", "n° d'enregistrement", "enregistrement"]),
+      vat: eeFieldByLabel(fields, ["tva"]),
       sourceTitle: addr.title || ""
     };
   }
 
+  // Ouvre https://easy-express.fr/shipping dans un nouvel onglet. ee-content.js
+  // y cherche le client dans le carnet d'adresses (société + adresse + CP +
+  // ville + pays + téléphone + email) et le sélectionne, sinon le crée.
   function openEasyExpressFromOrder() {
     if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
     const orderInfo = _currentOrderInfo || {};
@@ -2104,24 +2133,326 @@
       alert("Aucune adresse de livraison détectée sur cette commande.");
       return;
     }
+    // Valeur déclarée du colis : total HT du regroupement (modifiable sur Easy Express).
+    const totalHT = _originalRows.reduce(function (s, r) { return s + r.quantite * r.prixUnitaire; }, 0);
     const payload = {
       receiver: receiver,
       orderNo: orderInfo.orderNo || "",
-      source: "order"
+      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null
     };
     try {
-      chrome.runtime.sendMessage({ type: "OPEN_EE_FROM_ORDER", payload: payload }, function (res) {
+      chrome.runtime.sendMessage({ type: "OPEN_EE_SHIPPING", payload: payload }, function (res) {
         if (chrome.runtime.lastError) {
-          alert("Impossible d'ouvrir le bordereau : " + chrome.runtime.lastError.message);
+          alert("Impossible d'ouvrir Easy Express : " + chrome.runtime.lastError.message);
           return;
         }
         if (!res || !res.ok) {
-          alert("Erreur : " + ((res && res.error) || "impossible d'ouvrir la fenêtre."));
+          alert("Erreur : " + ((res && res.error) || "impossible d'ouvrir l'onglet Easy Express."));
         }
       });
     } catch (e) {
       alert(CONTEXT_LOST_MSG);
     }
+  }
+
+  // ─── WhatsApp : message libre ou modèle pré-rédigé ────────────────────
+  // Même principe que PhoneContactIcons (projet beli-jolie) : lien wa.me avec
+  // le texte en ?text=, pas d'emoji (WhatsApp Desktop les casse via ?text=).
+  // Le message est aussi copié dans le presse-papiers avant l'ouverture.
+  // Modèles : wa-templates.js (système modifiables + personnalisés, gérés
+  // dans la page Options). {company} = nom réglé dans les Options (sinon
+  // « {company} » reste visible), {plateforme} = marketplace de la commande,
+  // {transporteur} / {adresse} = saisis dans le panneau (adresse pré-remplie),
+  // {client} = société cliente, {commande} = n° de commande.
+  const WA_PLATFORM_NAMES = {
+    pfs: "Paris Fashion Shops", efp: "eFashion Paris", aks: "Ankorstore", faire: "Faire",
+    mc: "Microstore", oc: "Orderchamp", shopify: "notre site", bj: "notre site",
+    issyma: "notre site", bm: "Bijoux Mystères"
+  };
+  const WA_CARRIERS = ["Colissimo", "Chronopost", "DPD", "GLS", "UPS", "FedEx", "Mondial Relay", "TNT"];
+  // Indicatifs pour convertir un numéro national (0…) selon le pays de la commande.
+  const WA_DIAL_CODES = {
+    fr: "33", france: "33", be: "32", belgique: "32", belgium: "32", ch: "41", suisse: "41",
+    switzerland: "41", lu: "352", luxembourg: "352", de: "49", allemagne: "49", germany: "49",
+    es: "34", espagne: "34", spain: "34", it: "39", italie: "39", italy: "39", nl: "31",
+    "pays-bas": "31", netherlands: "31", pt: "351", portugal: "351", at: "43", autriche: "43",
+    austria: "43", gb: "44", uk: "44", "royaume-uni": "44", "united kingdom": "44",
+    ie: "353", irlande: "353", ireland: "353", mc: "377", monaco: "377"
+  };
+
+  function waNormCountry(c) {
+    return String(c || "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+  }
+
+  function waToNumber(raw, country) {
+    let d = String(raw || "").replace(/[^\d+]/g, "");
+    if (!d) return "";
+    if (d.indexOf("+") === 0) return d.slice(1).replace(/\D/g, "");
+    d = d.replace(/\D/g, "");
+    if (d.indexOf("00") === 0) return d.slice(2);
+    if (d.indexOf("0") === 0) {
+      const code = WA_DIAL_CODES[waNormCountry(country)] || "33";
+      return code + d.slice(1);
+    }
+    return d;
+  }
+
+  function waExtractContext() {
+    const orderInfo = _currentOrderInfo || {};
+    const receiver = eeExtractReceiverFromOrder(orderInfo) || {};
+    let phone = receiver.phone || "";
+    if (!phone) {
+      for (const a of orderInfo.addresses || []) {
+        phone = eeFieldByLabel((a && a.fields) || [], ["téléphone", "telephone", "tél", "tel", "mobile", "portable"]);
+        if (phone) break;
+      }
+    }
+    const country = receiver.country || "France";
+    const cityLine = [receiver.postalCode, receiver.city].filter(Boolean).join(" ");
+    const parts = [receiver.street, receiver.complement, cityLine].filter(Boolean);
+    if (country && !/^(france|fr)$/i.test(country.trim())) parts.push(country);
+    return {
+      phone: phone,
+      country: country,
+      address: parts.join(", "),
+      platform: WA_PLATFORM_NAMES[site] || "notre site",
+      client: receiver.company || [receiver.firstName, receiver.lastName].filter(Boolean).join(" "),
+      orderNo: orderInfo.orderNo || ""
+    };
+  }
+
+  function waRender(body, vars) {
+    return body.replace(/\{(company|boutique|plateforme|transporteur|adresse|client|commande)\}/g, function (m, k) {
+      const v = vars[k === "boutique" ? "company" : k];
+      return v && String(v).trim() ? String(v).trim() : m;
+    });
+  }
+
+  function waCopy(text) {
+    return new Promise(function (resolve) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { resolve(true); })
+          .catch(function () { resolve(fallbackCopy(text)); });
+      } else {
+        resolve(fallbackCopy(text));
+      }
+    });
+  }
+
+  function waOpen(number, text) {
+    const url = "https://wa.me/" + number + (text && text.trim() ? "?text=" + encodeURIComponent(text.trim()) : "");
+    window.open(url, "_blank", "noopener");
+  }
+
+  function waVars(state) {
+    return {
+      company: state.shopName || "{company}",
+      plateforme: state.ctx.platform,
+      transporteur: state.carrier,
+      adresse: state.address,
+      client: state.ctx.client,
+      commande: state.ctx.orderNo
+    };
+  }
+
+  function waOpenOptions(hash) {
+    try { chrome.runtime.sendMessage({ type: "OPEN_OPTIONS", hash: hash || "" }); } catch (e) { alert(CONTEXT_LOST_MSG); }
+  }
+
+  function waOnKey(e) {
+    if (e.key === "Escape" && document.getElementById("pfs-wa-overlay")) {
+      e.stopImmediatePropagation();
+      waClose();
+    }
+  }
+
+  function waClose() {
+    const o = document.getElementById("pfs-wa-overlay");
+    if (o) o.remove();
+    document.removeEventListener("keydown", waOnKey, true);
+  }
+
+  function waStorageGet(area, keys) {
+    return new Promise(function (resolve) {
+      try { chrome.storage[area].get(keys, function (r) { resolve(r || {}); }); }
+      catch (e) { resolve({}); }
+    });
+  }
+
+  async function openWhatsAppPanel() {
+    if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
+    waClose();
+    const ctx = waExtractContext();
+    const settings = await waStorageGet("sync", ["waShopName"]);
+    const local = await waStorageGet("local", ["waLastCarrier", WA_TEMPLATES_STORAGE_KEY]);
+    const state = {
+      ctx: ctx,
+      shopName: (settings.waShopName || "").trim(),
+      carrier: local.waLastCarrier || "",
+      address: ctx.address,
+      phone: ctx.phone,
+      templates: waMergeTemplates(local[WA_TEMPLATES_STORAGE_KEY])
+    };
+
+    const overlay = el("div", { id: "pfs-wa-overlay" });
+    const panel = el("div", { id: "pfs-wa-panel", role: "dialog", "aria-label": "WhatsApp" });
+    overlay.appendChild(panel);
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) waClose(); });
+    document.addEventListener("keydown", waOnKey, true);
+    document.body.appendChild(overlay);
+
+    renderWaMenu(panel, state);
+  }
+
+  function waHeader(panel, title, onBack) {
+    const head = el("div", { className: "pfs-wa-head" });
+    if (onBack) head.appendChild(el("button", { type: "button", className: "pfs-wa-back", text: "← Modèles", onClick: onBack }));
+    head.appendChild(el("h3", { text: title }));
+    head.appendChild(el("button", { type: "button", className: "pfs-wa-x", text: "×", title: "Fermer", onClick: waClose }));
+    panel.appendChild(head);
+  }
+
+  function waPhoneRow(state, onChange) {
+    const input = el("input", { type: "tel", className: "pfs-wa-input", placeholder: "Ex. 06 12 34 56 78 ou +32 470 12 34 56" });
+    input.value = state.phone || "";
+    const hint = el("div", { className: "pfs-wa-hint" });
+    function refresh() {
+      state.phone = input.value;
+      const n = waToNumber(state.phone, state.ctx.country);
+      hint.textContent = n ? "WhatsApp : +" + n : "Numéro absent de la commande : saisissez-le.";
+      hint.classList.toggle("pfs-wa-hint-warn", !n);
+      if (onChange) onChange();
+    }
+    input.addEventListener("input", refresh);
+    refresh();
+    return el("label", { className: "pfs-wa-field" }, ["Numéro WhatsApp", input, hint]);
+  }
+
+  function renderWaMenu(panel, state) {
+    while (panel.firstChild) panel.removeChild(panel.firstChild);
+    waHeader(panel, "WhatsApp" + (state.ctx.orderNo ? " — commande " + state.ctx.orderNo : ""));
+
+    const body = el("div", { className: "pfs-wa-body" });
+    body.appendChild(waPhoneRow(state));
+
+    const free = el("button", { type: "button", className: "pfs-wa-item pfs-wa-free" }, [
+      el("span", { className: "pfs-wa-item-title", text: "Envoyer un message" }),
+      el("span", { className: "pfs-wa-item-sub", text: "Ouvre la conversation WhatsApp sans texte" })
+    ]);
+    free.addEventListener("click", function () {
+      const n = waToNumber(state.phone, state.ctx.country);
+      if (!n) { alert("Saisissez le numéro WhatsApp du client."); return; }
+      waOpen(n, "");
+      waClose();
+    });
+    body.appendChild(free);
+
+    // Regroupe par groupe en gardant l'ordre d'apparition.
+    const groups = [];
+    state.templates.forEach(function (t) {
+      let g = groups.find(function (x) { return x.name === t.group; });
+      if (!g) { g = { name: t.group, items: [] }; groups.push(g); }
+      g.items.push(t);
+    });
+    groups.forEach(function (g) {
+      body.appendChild(el("div", { className: "pfs-wa-group", text: g.name }));
+      g.items.forEach(function (t) {
+        const btn = el("button", { type: "button", className: "pfs-wa-item" }, [
+          el("span", { className: "pfs-wa-item-title", text: t.title }),
+          el("span", { className: "pfs-wa-item-sub", text: waRender(t.body, waVars(state)).slice(0, 110) + "…" })
+        ]);
+        btn.addEventListener("click", function () { renderWaEditor(panel, state, t); });
+        body.appendChild(btn);
+      });
+    });
+
+    const manage = el("button", { type: "button", className: "pfs-wa-link", text: "Modifier ou créer des modèles" });
+    manage.addEventListener("click", function () { waOpenOptions("whatsapp"); });
+    body.appendChild(manage);
+    body.appendChild(el("br"));
+
+    const settings = el("button", { type: "button", className: "pfs-wa-link", text: state.shopName ? "Nom de la boutique : " + state.shopName + " (modifier)" : "Régler le nom de la boutique (Options)" });
+    settings.addEventListener("click", function () { waOpenOptions(""); });
+    body.appendChild(settings);
+    panel.appendChild(body);
+  }
+
+  function renderWaEditor(panel, state, tpl) {
+    while (panel.firstChild) panel.removeChild(panel.firstChild);
+    waHeader(panel, tpl.group + " — " + tpl.title, function () { renderWaMenu(panel, state); });
+
+    const body = el("div", { className: "pfs-wa-body" });
+    const needsCarrier = tpl.body.indexOf("{transporteur}") !== -1;
+    const needsAddress = tpl.body.indexOf("{adresse}") !== -1;
+
+    const textarea = el("textarea", { className: "pfs-wa-textarea", rows: "7" });
+    let dirty = false;
+    textarea.addEventListener("input", function () { dirty = true; regen.style.display = ""; });
+
+    function rerender() {
+      if (dirty) return;
+      textarea.value = waRender(tpl.body, waVars(state));
+    }
+
+    body.appendChild(waPhoneRow(state));
+
+    if (needsCarrier) {
+      const listId = "pfs-wa-carriers";
+      const carrierInput = el("input", { type: "text", className: "pfs-wa-input", list: listId, placeholder: "Choisir ou écrire le transporteur" });
+      carrierInput.value = state.carrier;
+      const datalist = el("datalist", { id: listId }, WA_CARRIERS.map(function (c) { return el("option", { value: c }); }));
+      const chips = el("div", { className: "pfs-wa-chips" }, WA_CARRIERS.map(function (c) {
+        const chip = el("button", { type: "button", className: "pfs-wa-chip", text: c });
+        chip.addEventListener("click", function () {
+          carrierInput.value = c;
+          carrierInput.dispatchEvent(new Event("input"));
+        });
+        return chip;
+      }));
+      carrierInput.addEventListener("input", function () {
+        state.carrier = carrierInput.value;
+        [].forEach.call(chips.children, function (ch) { ch.classList.toggle("on", ch.textContent === state.carrier.trim()); });
+        rerender();
+      });
+      [].forEach.call(chips.children, function (ch) { ch.classList.toggle("on", ch.textContent === state.carrier.trim()); });
+      body.appendChild(el("label", { className: "pfs-wa-field" }, ["Transporteur", carrierInput, datalist, chips]));
+    }
+
+    if (needsAddress) {
+      const addrInput = el("input", { type: "text", className: "pfs-wa-input", placeholder: "Adresse de livraison" });
+      addrInput.value = state.address;
+      addrInput.addEventListener("input", function () { state.address = addrInput.value; rerender(); });
+      body.appendChild(el("label", { className: "pfs-wa-field" }, ["Adresse de livraison", addrInput]));
+    }
+
+    const regen = el("button", { type: "button", className: "pfs-wa-link", text: "Message modifié à la main — régénérer depuis le modèle" });
+    regen.style.display = "none";
+    regen.addEventListener("click", function () { dirty = false; regen.style.display = "none"; rerender(); });
+
+    const editTpl = el("button", { type: "button", className: "pfs-wa-link", text: "Modifier ce modèle" });
+    editTpl.addEventListener("click", function () { waOpenOptions("tpl=" + encodeURIComponent(tpl.id)); });
+    body.appendChild(el("label", { className: "pfs-wa-field" }, ["Message", textarea, regen]));
+    body.appendChild(editTpl);
+    rerender();
+
+    const status = el("span", { className: "pfs-wa-status" });
+    const send = el("button", { type: "button", className: "pfs-wa-send", text: "Copier et ouvrir WhatsApp" });
+    send.addEventListener("click", async function () {
+      const text = textarea.value.trim();
+      const n = waToNumber(state.phone, state.ctx.country);
+      if (!n) { status.textContent = "Saisissez le numéro WhatsApp."; return; }
+      if (!text) { status.textContent = "Le message est vide."; return; }
+      if (needsCarrier && !String(state.carrier || "").trim()) { status.textContent = "Choisissez le transporteur."; return; }
+      if (waHasEmoji(text)) { status.textContent = "Retirez les emojis : WhatsApp Desktop les affiche mal."; return; }
+      if (needsCarrier) { try { chrome.storage.local.set({ waLastCarrier: state.carrier.trim() }); } catch (e) { /* ignore */ } }
+      await waCopy(text);
+      waOpen(n, text);
+      waClose();
+    });
+    const footer = el("div", { className: "pfs-wa-foot" }, [status, send]);
+
+    panel.appendChild(body);
+    panel.appendChild(footer);
   }
 
   function escapeHtml(s) {
@@ -2451,16 +2782,47 @@
     } catch (e) { /* noop */ }
   }
 
-  // Interroge l'API publique Beli & Jolie (via le service worker) pour
-  // retrouver la catégorie boutique de chaque référence marketplace.
-  function sageLookupRefs(refs) {
+  // Demande à SageBridge la liste des articles enregistrés dans Sage 50
+  // (code + nom court). Utilisé pour peupler le dropdown du picker en mode
+  // bridge. Renvoie `{ articles: [...] }` en cas de succès, ou `{ error: "…" }`
+  // en cas d'échec (jamais `null`) : l'appelant affiche l'erreur à l'utilisateur
+  // pour qu'il puisse diagnostiquer.
+  function sageListArticles() {
+    return new Promise(function (resolve) {
+      try {
+        chrome.runtime.sendMessage({ type: "SAGE_LIST_ARTICLES" }, function (resp) {
+          if (chrome.runtime.lastError) {
+            resolve({ error: "Service worker : " + chrome.runtime.lastError.message });
+            return;
+          }
+          if (!resp) { resolve({ error: "Aucune réponse du service worker." }); return; }
+          if (!resp.ok) {
+            resolve({ error: resp.error || "SageBridge a refusé la requête." });
+            return;
+          }
+          resolve({ articles: Array.isArray(resp.articles) ? resp.articles : [] });
+        });
+      } catch (e) {
+        resolve({ error: "Exception content : " + (e && e.message || String(e)) });
+      }
+    });
+  }
+
+  // Interroge l'API publique boutique (via le service worker) pour retrouver
+  // la catégorie et le code article Sage de chaque référence marketplace.
+  // `siteForLookup` indique quel tenant interroger (bj / issyma) : les sites
+  // marketplaces (pfs, efp, mc…) interrogent le tenant BJ par défaut.
+  function sageLookupRefs(refs, siteForLookup) {
     return new Promise(function (resolve) {
       if (!refs.length) return resolve({});
       try {
-        chrome.runtime.sendMessage({ type: "SAGE_LOOKUP_REFS", refs: refs }, function (resp) {
-          if (chrome.runtime.lastError || !resp || !resp.ok) resolve({});
-          else resolve(resp.data || {});
-        });
+        chrome.runtime.sendMessage(
+          { type: "SAGE_LOOKUP_REFS", refs: refs, site: siteForLookup || "bj" },
+          function (resp) {
+            if (chrome.runtime.lastError || !resp || !resp.ok) resolve({});
+            else resolve(resp.data || {});
+          }
+        );
       } catch (e) {
         resolve({});
       }
@@ -2788,50 +3150,57 @@
       // 1. Source de vérité : la boutique Beli & Jolie, interrogée par
       // référence pour TOUT produit qui en a une (la catégorie marketplace
       // n'est jamais prioritaire sur la catégorie boutique).
-      // Issyma est un autre tenant sur la même app : l'API publique BJ ne
-      // contient pas ses produits (404) et une collision de référence donnerait
-      // une fausse catégorie — donc on saute le lookup pour ce site.
+      // Depuis la refonte "code article Sage par catégorie" côté boutique
+      // (2026-10-28), chaque tenant (BJ, Issyma) a son endpoint public et sa
+      // clé — le lookup est désormais fait pour les deux. Le serveur résout
+      // la cascade sous-catégorie → catégorie et renvoie `sageArticleCode`.
       const refs = [];
-      if (site !== "issyma") {
-        for (const it of items) {
-          if (it.ref && refs.indexOf(it.ref) === -1) refs.push(it.ref);
-        }
+      for (const it of items) {
+        if (it.ref && refs.indexOf(it.ref) === -1) refs.push(it.ref);
       }
-      const found = refs.length ? await sageLookupRefs(refs) : {};
+      const found = refs.length ? await sageLookupRefs(refs, site) : {};
       for (const it of items) {
         const info = it.ref ? found[it.ref] : null;
         if (info) {
-          if (info.category) {
-            it.bjCategory = info.category;
-            it.code = sageArticleForCategory(info.category);
+          // Chemin unique en mode « Créer dans Sage » : la boutique a
+          // directement renseigné le code article Sage sur la catégorie /
+          // sous-catégorie du produit. Aucune règle regex en repli — si
+          // le code manque, le picker demandera à l'utilisateur.
+          if (info.sageArticleCode) {
+            it.code = info.sageArticleCode;
           }
-          if (info.name) {
-            const codeFromName = sageArticleForCategory(info.name);
-            if (!it.code) {
-              it.code = codeFromName;
-            } else if (it.code === "ART0013" && codeFromName && codeFromName !== "ART0013") {
-              // Catégorie boutique « Présentoirs » mais nom « Lot de 16
-              // boucles d'oreilles… » : présentoir garni → lot du bijou.
-              it.code = codeFromName;
-            } else if (it.code === "ART0002" && codeFromName === "ART0016") {
-              // Catégorie boutique « Bracelet » mais nom « Bracelet jonc… » :
-              // le jonc a son propre article Sage (ART0016).
-              it.code = codeFromName;
-              it.bjCategory = "Bracelet jonc";
-            }
-          }
+          if (info.category) it.bjCategory = info.category;
           if (!it.image && info.image) it.image = info.image;
           if (!it.name && info.name) it.name = info.name;
+          // Mode CSV uniquement : garder les anciennes règles bijouterie
+          // (catégorie → code via regex, exceptions joncs / présentoirs
+          // garnis). Elles sont figées sur le catalogue BJ et incompatibles
+          // avec les autres tenants (Issyma, etc.), d'où leur suppression
+          // en mode bridge.
+          if (!bridgeMode) {
+            if (info.category && !it.code) it.code = sageArticleForCategory(info.category);
+            if (info.name && !it.code) it.code = sageArticleForCategory(info.name);
+            if (info.name) {
+              const codeFromName = sageArticleForCategory(info.name);
+              if (it.code === "ART0013" && codeFromName && codeFromName !== "ART0013") {
+                it.code = codeFromName;
+              } else if (it.code === "ART0002" && codeFromName === "ART0016") {
+                it.code = codeFromName;
+                it.bjCategory = "Bracelet jonc";
+              }
+            }
+          }
         }
-        // 2. Repli local (référence absente ou introuvable sur la boutique) :
-        // catégorie marketplace, puis nom du produit.
-        if (!it.code) it.code = sageArticleForCategory(it.categorie);
-        if (!it.code && it.name) it.code = sageArticleForCategory(it.name);
-        // Même exception jonc qu'au niveau boutique : les catégories
-        // marketplace génériques (« Bracelet » via normalizeFaireCategory)
-        // masquent le jonc, dont l'article Sage est distinct (ART0016).
-        if (it.code === "ART0002" && it.name && /joncs?/i.test(it.name)) {
-          it.code = "ART0016";
+        // Repli local : UNIQUEMENT en mode CSV (règles bijouterie BJ).
+        // En mode bridge, un produit sans code côté boutique passera par
+        // le picker — l'utilisateur ira remplir le code dans son admin,
+        // ou le choisira dans la liste réelle de Sage 50.
+        if (!bridgeMode) {
+          if (!it.code) it.code = sageArticleForCategory(it.categorie);
+          if (!it.code && it.name) it.code = sageArticleForCategory(it.name);
+          if (it.code === "ART0002" && it.name && /joncs?/i.test(it.name)) {
+            it.code = "ART0016";
+          }
         }
       }
 
@@ -2857,13 +3226,26 @@
     showSagePicker(unresolved, items);
   }
 
-  function showSagePicker(unresolved, allItems) {
+  async function showSagePicker(unresolved, allItems) {
     const body = document.getElementById("pfs-modal-body");
     if (!body) return;
     const old = document.getElementById("pfs-sage-picker");
     if (old) old.remove();
     const oldWarn = document.getElementById("pfs-sage-warn");
     if (oldWarn) oldWarn.remove();
+
+    const bridgeMode = _sageMode === "bridge";
+    // En mode bridge : la source de vérité est Sage 50. On essaie de récupérer
+    // la liste des articles enregistrés via SageBridge pour peupler le dropdown.
+    // Si SageBridge ne répond pas (pas lancé / vieille version) ou renvoie une
+    // liste vide : fallback champ texte libre + message avec la cause.
+    let sageArticlesLive = null;
+    let sageArticlesError = null;
+    if (bridgeMode) {
+      const r = await sageListArticles();
+      if (r && Array.isArray(r.articles)) sageArticlesLive = r.articles;
+      else sageArticlesError = (r && r.error) || "Raison inconnue.";
+    }
 
     // Un même produit (même clé) présent sur plusieurs lignes n'est demandé qu'une fois.
     const groups = new Map();
@@ -2874,17 +3256,40 @@
     }
 
     const panel = el("div", { id: "pfs-sage-picker" });
-    panel.appendChild(el("h3", { text: "Avant l'export : attribuez un article Sage à ces produits" }));
+    panel.appendChild(
+      el("h3", {
+        text: bridgeMode
+          ? "Code article manquant pour certains produits"
+          : "Avant l'export : attribuez un article Sage à ces produits"
+      })
+    );
     panel.appendChild(
       el("p", {
         className: "pfs-sage-pick-hint",
-        text:
-          "Ces produits n'ont pas été reconnus (ni par leur catégorie marketplace, ni sur beliandjolie.com). " +
-          "Choisissez l'article Sage de chacun — le choix sera mémorisé pour les prochains exports."
+        text: bridgeMode
+          ? ("Ces produits n'ont pas de code article Sage dans votre boutique. " +
+             "Deux options par produit : ouvrir l'admin boutique pour y remplir le code (recommandé — valable pour toutes les prochaines commandes), " +
+             "ou choisir un article Sage ponctuellement (mémorisé pour cette boutique).")
+          : ("Ces produits n'ont pas été reconnus (ni par leur catégorie marketplace, ni sur beliandjolie.com). " +
+             "Choisissez l'article Sage de chacun — le choix sera mémorisé pour les prochains exports.")
       })
     );
+    if (bridgeMode && sageArticlesLive === null) {
+      panel.appendChild(
+        el("p", {
+          className: "pfs-sage-pick-hint pfs-sage-pick-warn",
+          text: "Liste Sage indisponible — saisie libre du code à la place. Cause : " + (sageArticlesError || "inconnue") +
+                " · Vérifie que SageBridge est lancé, que Sage 50 est ouvert, et que l'extension a été rechargée (chrome://extensions)."
+        })
+      );
+    }
 
-    const selects = [];
+    // URL de la page admin boutique qui liste les catégories.
+    const adminBase =
+      site === "issyma" ? "https://issyma.fr/admin/categories"
+                       : "https://beliandjolie.com/admin/categories";
+
+    const inputs = [];
     for (const g of groups.values()) {
       const row = el("div", { className: "pfs-sage-pick-row" });
       if (g.sample.image) {
@@ -2901,14 +3306,36 @@
       if (detBits.length) info.appendChild(el("div", { className: "pfs-sage-pick-detail", text: detBits.join(" — ") }));
       row.appendChild(info);
 
-      const sel = document.createElement("select");
-      sel.className = "pfs-sage-pick-select";
-      sel.appendChild(new Option("— Choisir un article Sage —", ""));
-      for (const a of SAGE_ARTICLES) {
-        sel.appendChild(new Option(a.code + " — " + a.label, a.code));
+      // En mode bridge : bouton « Régler sur ma boutique » qui ouvre l'admin.
+      if (bridgeMode) {
+        const adminBtn = el("a", {
+          className: "pfs-sage-pick-admin",
+          text: "Régler sur ma boutique ↗"
+        });
+        adminBtn.href = adminBase;
+        adminBtn.target = "_blank";
+        adminBtn.rel = "noreferrer";
+        row.appendChild(adminBtn);
       }
-      row.appendChild(sel);
-      selects.push({ group: g, sel: sel });
+
+      // Champ de saisie : dropdown Sage si on a la liste live, sinon texte libre.
+      let field;
+      if (bridgeMode && sageArticlesLive === null) {
+        field = document.createElement("input");
+        field.type = "text";
+        field.className = "pfs-sage-pick-select";
+        field.placeholder = "Code article Sage";
+      } else {
+        field = document.createElement("select");
+        field.className = "pfs-sage-pick-select";
+        field.appendChild(new Option("— Choisir un article Sage —", ""));
+        const list = bridgeMode ? sageArticlesLive : SAGE_ARTICLES.map(function (a) { return { code: a.code, nom: a.label }; });
+        for (const a of list) {
+          field.appendChild(new Option(a.code + (a.nom ? " — " + a.nom : ""), a.code));
+        }
+      }
+      row.appendChild(field);
+      inputs.push({ group: g, field: field });
       panel.appendChild(row);
     }
 
@@ -2922,7 +3349,7 @@
       el("button", {
         className: "pfs-sage-pick-ok",
         type: "button",
-        text: _sageMode === "bridge" ? "Valider et créer dans Sage" : "Valider et exporter le CSV",
+        text: bridgeMode ? "Valider et créer dans Sage" : "Valider et exporter le CSV",
         onClick: onValidate
       })
     ]);
@@ -2932,8 +3359,8 @@
 
     async function onValidate() {
       const manual = await sageLoadManualMap();
-      for (const s of selects) {
-        const code = s.sel.value;
+      for (const s of inputs) {
+        const code = (s.field.value || "").trim();
         for (const it of s.group.items) it.code = code || "";
         if (code) manual[s.group.key] = code;
       }

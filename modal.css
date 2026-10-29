@@ -85,6 +85,7 @@
   padding: 18px 28px 24px;
   border-top: 1px solid #eceef1;
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
 }
@@ -397,6 +398,29 @@
   color: #111;
   cursor: pointer;
 }
+.pfs-sage-pick-admin {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid #a7f3d0;
+}
+.pfs-sage-pick-admin:hover { background: #d1fae5; }
+.pfs-sage-pick-warn {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  color: #78350f;
+  font-size: 12.5px;
+}
 .pfs-sage-pick-actions {
   display: flex;
   justify-content: flex-end;
@@ -650,3 +674,166 @@
 .pfs-sage-bridge-ok { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
 .pfs-sage-bridge-warn { background: #fffbeb; color: #92400e; border-color: #fde68a; }
 .pfs-sage-bridge-error { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+
+
+/* ─── WhatsApp (bouton du footer + panneau modèles) ─── */
+#pfs-wa-btn {
+  background: #16a34a;
+  color: #fff;
+  border: 1px solid #16a34a;
+  border-radius: 10px;
+  padding: 12px 20px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#pfs-wa-btn:hover { background: #15803d; border-color: #15803d; }
+
+#pfs-wa-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: rgba(15, 15, 15, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #111;
+}
+#pfs-wa-panel {
+  background: #fff;
+  border-radius: 14px;
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+}
+.pfs-wa-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #eceef1;
+}
+.pfs-wa-head h3 {
+  flex: 1;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #111;
+}
+.pfs-wa-back, .pfs-wa-x {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: #374151;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 4px 6px;
+}
+.pfs-wa-x { font-size: 22px; line-height: 1; }
+.pfs-wa-body {
+  padding: 14px 18px;
+  overflow-y: auto;
+  flex: 1;
+}
+.pfs-wa-field {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+.pfs-wa-input, .pfs-wa-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 5px;
+  padding: 9px 11px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #111;
+  background: #fff;
+}
+.pfs-wa-textarea { resize: vertical; min-height: 130px; }
+.pfs-wa-input:focus, .pfs-wa-textarea:focus { outline: 2px solid #86efac; border-color: #16a34a; }
+.pfs-wa-hint { margin-top: 4px; font-size: 12px; font-weight: 500; color: #15803d; }
+.pfs-wa-hint-warn { color: #b45309; }
+.pfs-wa-group {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+.pfs-wa-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.pfs-wa-item:hover { background: #f0fdf4; border-color: #86efac; }
+.pfs-wa-free { border-color: #16a34a; background: #f0fdf4; }
+.pfs-wa-item-title { display: block; font-size: 14px; font-weight: 600; color: #111; }
+.pfs-wa-item-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pfs-wa-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.pfs-wa-chip {
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #374151;
+  cursor: pointer;
+}
+.pfs-wa-chip.on, .pfs-wa-chip:hover { background: #dcfce7; border-color: #16a34a; color: #166534; }
+.pfs-wa-link {
+  display: inline-block;
+  margin-top: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #15803d;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.pfs-wa-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid #eceef1;
+}
+.pfs-wa-status { flex: 1; font-size: 13px; color: #b91c1c; }
+.pfs-wa-send {
+  background: #16a34a;
+  color: #fff;
+  border: 0;
+  border-radius: 10px;
+  padding: 11px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pfs-wa-send:hover { background: #15803d; }
