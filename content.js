@@ -438,20 +438,30 @@
   }
 
   // Couleur depuis un SKU marketplace de la forme {REF}_{COULEUR}[_{TAILLE}]
-  // (Ankorstore : "A1720_VERT_DEAU" → "VERT DEAU"). Pour Faire, le SKU se
-  // termine par _{UNIT|PACK}_{idSuffix} : on coupe à partir de UNIT/PACK.
+  // (Ankorstore historique : "A1720_VERT_DEAU" → "VERT DEAU"). Format
+  // « variante » (Faire, OC, Ankorstore récent) : {REF}_{COULEUR}_UNIT_{id}
+  // [-taille…] — on coupe toujours à UNIT/PACK. Repli isFaire=true : couper
+  // la dernière partie quand UNIT/PACK est absent (ancien SKU Faire court).
   function colorFromSku(sku, isFaire) {
     if (!sku) return null;
     let parts = String(sku).split("_").filter(Boolean);
     if (parts.length < 2) return null;
     parts = parts.slice(1);
-    if (isFaire) {
-      const upIdx = parts.findIndex(function (p) { return /^(UNIT|PACK)$/i.test(p); });
-      if (upIdx >= 0) parts = parts.slice(0, upIdx);
-      else if (parts.length > 1) parts = parts.slice(0, parts.length - 1);
-    }
+    const upIdx = parts.findIndex(function (p) { return /^(UNIT|PACK)$/i.test(p); });
+    if (upIdx >= 0) parts = parts.slice(0, upIdx);
+    else if (isFaire && parts.length > 1) parts = parts.slice(0, parts.length - 1);
     const joined = parts.join(" ").trim();
     return joined || null;
+  }
+
+  // SKU au format variante ({REF}_{COULEUR}_UNIT_{id}[-taille…]) → vraie ref
+  // courte (avant le 1ᵉʳ `_`). SKU historique sans UNIT/PACK laissé intact,
+  // pour ne pas tronquer "A1720_VERT_DEAU" en "A1720" côté Ankorstore ancien.
+  function shortRefFromSku(sku) {
+    if (!sku) return sku;
+    const s = String(sku);
+    if (/_(UNIT|PACK)(_|$)/i.test(s)) return s.split("_")[0];
+    return s;
   }
 
   // Premier argument non vide (pour extraire réf / nom sans connaître le
@@ -714,7 +724,7 @@
       const cat = detectCategory(name);
       const aksSku = prod ? firstNonEmpty(prod.sku, prod.reference, prod.variantSku, a.sku) : firstNonEmpty(a.sku);
       addRow(map, cat, price, qty, {
-        ref: aksSku,
+        ref: shortRefFromSku(aksSku),
         name: name || null,
         image: prod ? firstImageUrl(prod.images, prod.image, prod.imageUrl, prod.picture) : null,
         color: colorFromSku(aksSku, false)
@@ -1520,13 +1530,11 @@
       // sinon la facture Sage affiche le SKU complet à la place de la couleur
       // (ex. « e144_noir_UNIT_au0qavxq-taille » au lieu de « e144 » + « Noir »).
       const ocFullSku = skuMatch ? skuMatch[1] : null;
-      const ocRef = ocFullSku ? ocFullSku.split("_")[0] : null;
-      const ocColor = colorFromSku(ocFullSku, true);
       addRow(map, cat, price, qty, {
-        ref: ocRef,
+        ref: shortRefFromSku(ocFullSku),
         name: name,
         image: rowImg && /^https?:\/\//i.test(rowImg.src || "") ? rowImg.src : null,
-        color: ocColor
+        color: colorFromSku(ocFullSku, true)
       });
     }
 

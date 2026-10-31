@@ -26,7 +26,7 @@ Besides the aggregated table, the modal footer also offers (details in the dedic
 
 Clicking the extension icon opens the **Options page** (WhatsApp shop name + templates, shop password for the Sage category lookup).
 
-**Version history (recent)** : 3.30.1 multi-tenant Sage picker · 3.31.0 Easy Express API removed → website flow · 3.32.0 WhatsApp button · 3.33.0 editable WhatsApp templates · 3.33.1 icon click opens the Options page · 3.33.2 OC uses short ref + color extracted from `{ref}_{color}_UNIT_…` SKU (like Faire).
+**Version history (recent)** : 3.30.1 multi-tenant Sage picker · 3.31.0 Easy Express API removed → website flow · 3.32.0 WhatsApp button · 3.33.0 editable WhatsApp templates · 3.33.1 icon click opens the Options page · 3.33.2 OC uses short ref + color extracted from `{ref}_{color}_UNIT_…` SKU (like Faire) · 3.33.3 same fix for Ankorstore when its SKU has the `_UNIT_` variant marker (short ref + color via shared `shortRefFromSku` / `colorFromSku`).
 
 ## Developing & loading
 
