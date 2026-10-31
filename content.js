@@ -1515,10 +1515,18 @@
       const cat = detectCategory(name);
       const rowImg = tr.querySelector("img");
       const skuMatch = (tr.textContent || "").match(/SKU\s*:?\s*([A-Za-z0-9][\w-]*)/i);
+      // SKU OC = "{ref}_{couleur}_UNIT_{id}[-taille…]" (comme Faire). On ne
+      // garde que la vraie référence courte et on sort la couleur du SKU,
+      // sinon la facture Sage affiche le SKU complet à la place de la couleur
+      // (ex. « e144_noir_UNIT_au0qavxq-taille » au lieu de « e144 » + « Noir »).
+      const ocFullSku = skuMatch ? skuMatch[1] : null;
+      const ocRef = ocFullSku ? ocFullSku.split("_")[0] : null;
+      const ocColor = colorFromSku(ocFullSku, true);
       addRow(map, cat, price, qty, {
-        ref: skuMatch ? skuMatch[1] : null,
+        ref: ocRef,
         name: name,
-        image: rowImg && /^https?:\/\//i.test(rowImg.src || "") ? rowImg.src : null
+        image: rowImg && /^https?:\/\//i.test(rowImg.src || "") ? rowImg.src : null,
+        color: ocColor
       });
     }
 

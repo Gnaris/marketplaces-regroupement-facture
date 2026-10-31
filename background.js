@@ -152,23 +152,33 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   }
 
   if (message.type === "SAGE_LOOKUP_REFS") {
-    const refs = Array.isArray(message.refs) ? message.refs.slice(0, 60) : [];
+    const refs = Array.isArray(message.refs) ? message.refs : [];
     const site = message.site || "bj";
-    Promise.all(
-      refs.map(function (ref) {
-        return lookupBjRef(String(ref), site);
-      })
-    )
-      .then(function (results) {
-        const out = {};
-        refs.forEach(function (ref, i) {
-          if (results[i]) out[ref] = results[i];
-        });
-        sendResponse({ ok: true, data: out });
-      })
-      .catch(function (err) {
-        sendResponse({ ok: false, error: (err && err.message) || String(err) });
-      });
+    // Chunk par 30 en séquentiel : évite N fetches parallèles qui saturent
+    // le pool de connexions côté boutique (bug observé commande KJ25KJNK, 82 refs
+    // → ancienne borne .slice(0,60) jetait les 22 derniers en silence).
+    (function () {
+      const CHUNK = 30;
+      const out = {};
+      let i = 0;
+      function next() {
+        if (i >= refs.length) {
+          sendResponse({ ok: true, data: out });
+          return;
+        }
+        const batch = refs.slice(i, i + CHUNK);
+        i += CHUNK;
+        Promise.all(batch.map(function (ref) { return lookupBjRef(String(ref), site); }))
+          .then(function (results) {
+            batch.forEach(function (ref, k) { if (results[k]) out[ref] = results[k]; });
+            next();
+          })
+          .catch(function (err) {
+            sendResponse({ ok: false, error: (err && err.message) || String(err) });
+          });
+      }
+      next();
+    })();
     return true;
   }
 
