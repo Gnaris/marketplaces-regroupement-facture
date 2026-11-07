@@ -228,6 +228,38 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return true;
   }
 
+  // 37 Express (site web) : même principe qu'Easy Express. L'onglet s'ouvre
+  // sur l'étape « Adresses » d'un envoi ; x37-content.js récupère le
+  // destinataire (X37_GET_PREFILL) et le libère une fois sélectionné
+  // (X37_PREFILL_DONE).
+  if (message.type === "OPEN_37_SHIPPING") {
+    open37ExpressShipping(message.payload || {})
+      .then(function (res) { sendResponse(res); })
+      .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
+    return true;
+  }
+
+  if (message.type === "X37_GET_PREFILL") {
+    x37GetPrefill(sender && sender.tab ? sender.tab.id : null)
+      .then(function (data) { sendResponse({ ok: true, data: data }); })
+      .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
+    return true;
+  }
+
+  // Destinataire choisi : on garde le payload (valeur du colis) pour l'étape
+  // « Assurance », mais la page Adresses ne doit plus le rejouer.
+  if (message.type === "X37_ADDRESS_DONE") {
+    x37MarkAddressDone(sender && sender.tab ? sender.tab.id : null)
+      .then(function () { sendResponse({ ok: true }); });
+    return true;
+  }
+
+  if (message.type === "X37_PREFILL_DONE") {
+    x37ClearPrefill(sender && sender.tab ? sender.tab.id : null)
+      .then(function () { sendResponse({ ok: true }); });
+    return true;
+  }
+
   if (message.type !== "FETCH_ORDER") return;
 
   const site = message.site;
@@ -744,7 +776,72 @@ function eeClearPrefill(tabId) {
 }
 
 // Nettoyage : un onglet fermé avant la fin ne laisse pas de destinataire orphelin.
-chrome.tabs.onRemoved.addListener(function (tabId) { eeClearPrefill(tabId); });
+chrome.tabs.onRemoved.addListener(function (tabId) { eeClearPrefill(tabId); x37ClearPrefill(tabId); });
+
+// ─────────────────────────────────────────────
+// 37 Express — ouverture de l'étape « Adresses » d'un envoi de colis
+// (https://www.37-express.com/qyfr/express/parcel/address/, compte connecté).
+// Le destinataire est rangé sous x37ShipPrefill_<tabId> et lu par
+// x37-content.js, qui le cherche dans le carnet d'adresses 37 Express et le
+// crée s'il n'existe pas.
+// ─────────────────────────────────────────────
+const X37_SHIPPING_URL = "https://www.37-express.com/qyfr/express/parcel/address/";
+const X37_PREFILL_TTL_MS = 60 * 60 * 1000;
+
+function x37PrefillKey(tabId) { return "x37ShipPrefill_" + tabId; }
+
+async function open37ExpressShipping(payload) {
+  const tab = await new Promise(function (resolve, reject) {
+    chrome.tabs.create({ url: X37_SHIPPING_URL, active: true }, function (t) {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(t);
+    });
+  });
+  const prefill = {
+    receiver: payload.receiver || {},
+    orderNo: payload.orderNo || "",
+    parcelValue: payload.parcelValue || null,
+    timestamp: Date.now()
+  };
+  await new Promise(function (resolve) {
+    const o = {}; o[x37PrefillKey(tab.id)] = prefill;
+    chrome.storage.local.set(o, function () { resolve(); });
+  });
+  return { ok: true };
+}
+
+async function x37GetPrefill(tabId) {
+  if (tabId == null) return null;
+  const key = x37PrefillKey(tabId);
+  const res = await new Promise(function (resolve) { chrome.storage.local.get([key], resolve); });
+  const p = res && res[key];
+  if (!p) return null;
+  if (Date.now() - (p.timestamp || 0) > X37_PREFILL_TTL_MS) {
+    await x37ClearPrefill(tabId);
+    return null;
+  }
+  return p;
+}
+
+async function x37MarkAddressDone(tabId) {
+  if (tabId == null) return;
+  const key = x37PrefillKey(tabId);
+  const res = await new Promise(function (resolve) { chrome.storage.local.get([key], resolve); });
+  const p = res && res[key];
+  if (!p) return;
+  p.addressDone = true;
+  await new Promise(function (resolve) {
+    const o = {}; o[key] = p;
+    chrome.storage.local.set(o, function () { resolve(); });
+  });
+}
+
+function x37ClearPrefill(tabId) {
+  return new Promise(function (resolve) {
+    if (tabId == null) return resolve();
+    chrome.storage.local.remove([x37PrefillKey(tabId)], function () { resolve(); });
+  });
+}
 
 // ─── SageBridge (création directe dans Sage 50) ───────────────────────────
 const SAGE_BRIDGE_URL = "http://127.0.0.1:8765";

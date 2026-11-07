@@ -87,6 +87,7 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 10px;
 }
 
@@ -104,10 +105,8 @@
   background: #2a2a2a;
 }
 
-#pfs-pdf-btn,
-#pfs-sage-btn,
-#pfs-sage-direct-btn,
-#pfs-ee-btn {
+.pfs-menu-toggle,
+#pfs-sage-direct-btn {
   background: #fff;
   color: #111;
   border: 1px solid #d1d5db;
@@ -118,23 +117,69 @@
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
-#pfs-pdf-btn:hover,
-#pfs-sage-btn:hover,
-#pfs-sage-direct-btn:hover,
-#pfs-ee-btn:hover {
+.pfs-menu-toggle:hover,
+#pfs-sage-direct-btn:hover {
   background: #f3f4f6;
   border-color: #9ca3af;
 }
-/* Easy-Express : accentué pour qu'il saute aux yeux à côté des exports. */
-#pfs-ee-btn {
+/* ─── Menus déroulants du footer (Transporteurs, Exporter) — 3.34.0 ─── */
+.pfs-menu {
+  position: relative;
+}
+/* Transporteurs : accentué (noir) pour qu'il saute aux yeux. */
+#pfs-ship-menu .pfs-menu-toggle {
   background: #111;
   color: #fff;
   border-color: #111;
 }
-#pfs-ee-btn:hover {
+#pfs-ship-menu .pfs-menu-toggle:hover {
   background: #2a2a2a;
   border-color: #2a2a2a;
-  color: #fff;
+}
+.pfs-menu-caret {
+  font-size: 12px;
+  margin-left: 2px;
+}
+.pfs-menu-list {
+  display: none;
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  min-width: 220px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  z-index: 5;
+}
+.pfs-menu.pfs-menu-open .pfs-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pfs-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: #111;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pfs-menu-item:hover,
+.pfs-menu-item:focus-visible {
+  background: #f3f4f6;
+  outline: none;
+}
+.pfs-menu-item:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 #pfs-img-strip {

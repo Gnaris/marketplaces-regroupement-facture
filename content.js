@@ -1793,7 +1793,87 @@
     renderRowsTable();
   }
 
+  // ─── Menus déroulants du footer (3.34.0) ───
+  function closeFooterMenus(except) {
+    const open = document.querySelectorAll(".pfs-menu.pfs-menu-open");
+    for (let i = 0; i < open.length; i++) {
+      if (open[i] !== except) open[i].classList.remove("pfs-menu-open");
+    }
+  }
+  function buildFooterMenu(id, label, title, items) {
+    const wrap = el("div", { id: id, className: "pfs-menu" });
+    const toggle = el("button", { type: "button", className: "pfs-menu-toggle", title: title, "aria-haspopup": "true" });
+    toggle.appendChild(document.createTextNode(label + " "));
+    toggle.appendChild(el("span", { className: "pfs-menu-caret", "aria-hidden": "true", text: "▾" }));
+    const list = el("div", { className: "pfs-menu-list", role: "menu" }, items);
+    toggle.addEventListener("click", function (e) {
+      e.stopPropagation();
+      closeFooterMenus(wrap);
+      wrap.classList.toggle("pfs-menu-open");
+    });
+    for (const it of items) {
+      it.setAttribute("role", "menuitem");
+      it.addEventListener("click", function () { wrap.classList.remove("pfs-menu-open"); });
+    }
+    wrap.appendChild(toggle);
+    wrap.appendChild(list);
+    return wrap;
+  }
+  // Un menu dont toutes les entrées sont masquées disparaît.
+  function syncFooterMenus() {
+    const menus = document.querySelectorAll("#pfs-modal-footer .pfs-menu");
+    for (let i = 0; i < menus.length; i++) {
+      const items = menus[i].querySelectorAll(".pfs-menu-item");
+      let visible = false;
+      for (let j = 0; j < items.length; j++) if (items[j].style.display !== "none") visible = true;
+      menus[i].style.display = visible ? "" : "none";
+      if (!visible) menus[i].classList.remove("pfs-menu-open");
+    }
+  }
+  document.addEventListener("click", function () { closeFooterMenus(null); });
+
+  // ─── Bouclier clavier / focus (3.34.0) ───
+  // Certains sites (fenêtres React avec « focus trap », raccourcis clavier
+  // globaux…) reprennent le focus ou avalent les frappes : impossible d'écrire
+  // dans « Vérification entreprise ». Les écouteurs posés sur window en phase
+  // de capture passent avant ceux de la page : pour tout événement clavier /
+  // focus / souris qui vise notre interface, on arrête la propagation (la
+  // saisie elle-même — action par défaut — n'est pas bloquée) et on traite
+  // nous-mêmes nos raccourcis (Échap, Entrée = Vérifier) via node.__pfsOnKey.
+  const PFS_UI_SELECTOR = "#pfs-modal-overlay, #pfs-wa-overlay, #pfs-sage-picker";
+  let pfsShieldInstalled = false;
+  function pfsOwnTarget(t) {
+    return t && t.nodeType === 1 && typeof t.closest === "function" ? t.closest(PFS_UI_SELECTOR) : null;
+  }
+  function pfsHandleOwnKey(e, root) {
+    for (let n = e.target; n && n !== root.parentNode; n = n.parentNode) {
+      if (typeof n.__pfsOnKey === "function" && n.__pfsOnKey(e)) return;
+    }
+    if (e.key !== "Escape") return;
+    if (document.querySelector(".pfs-menu.pfs-menu-open")) { closeFooterMenus(null); return; }
+    if (document.getElementById("pfs-wa-overlay")) { waClose(); return; }
+    hideModal();
+  }
+  function installPfsShield() {
+    if (pfsShieldInstalled) return;
+    pfsShieldInstalled = true;
+    ["focusin", "focusout", "mousedown", "pointerdown", "touchstart"].forEach(function (type) {
+      window.addEventListener(type, function (e) {
+        if (pfsOwnTarget(e.target)) e.stopPropagation();
+      }, true);
+    });
+    ["keydown", "keypress", "keyup"].forEach(function (type) {
+      window.addEventListener(type, function (e) {
+        const root = pfsOwnTarget(e.target);
+        if (!root) return;
+        e.stopPropagation();
+        if (type === "keydown") pfsHandleOwnKey(e, root);
+      }, true);
+    });
+  }
+
   function ensureOverlay() {
+    installPfsShield();
     let overlay = document.getElementById("pfs-modal-overlay");
     if (overlay) return overlay;
 
@@ -1834,14 +1914,21 @@
       imgStrip.appendChild(img);
     }
 
+    // 3.34.0 : footer allégé — transporteurs et exports regroupés dans des
+    // menus déroulants (les ids des boutons sont conservés pour la logique
+    // d'affichage). Fermer = × de l'en-tête, Échap ou clic hors du modal.
     const footer = el("div", { id: "pfs-modal-footer" }, [
       imgStrip,
       el("button", { id: "pfs-wa-btn", type: "button", text: "WhatsApp", title: "Envoyer un message WhatsApp au client", onClick: function () { openWhatsAppPanel(); } }),
-      el("button", { id: "pfs-ee-btn", type: "button", text: "Afficher la liste des transporteurs sur Easy Express", onClick: function () { openEasyExpressFromOrder(); } }),
-      el("button", { id: "pfs-sage-direct-btn", type: "button", text: "Créer dans Sage", onClick: function () { _sageMode = "bridge"; exportToSageCsv(); } }),
-      el("button", { id: "pfs-sage-btn", type: "button", text: "Exporter CSV Sage", onClick: function () { _sageMode = "csv"; exportToSageCsv(); } }),
-      el("button", { id: "pfs-pdf-btn", type: "button", text: "Exporter en PDF", onClick: exportToPdf }),
-      el("button", { id: "pfs-close-btn", type: "button", text: "Fermer", onClick: hideModal })
+      buildFooterMenu("pfs-ship-menu", "Transporteurs", "Afficher la liste des transporteurs", [
+        el("button", { id: "pfs-ee-btn", type: "button", className: "pfs-menu-item", text: "Easy Express", title: "Afficher la liste des transporteurs sur Easy Express", onClick: function () { openEasyExpressFromOrder(); } }),
+        el("button", { id: "pfs-37-btn", type: "button", className: "pfs-menu-item", text: "37 Express", title: "Afficher la liste des transporteurs sur 37 Express", onClick: function () { open37ExpressFromOrder(); } })
+      ]),
+      buildFooterMenu("pfs-export-menu", "Exporter", "Exporter la facture regroupée", [
+        el("button", { id: "pfs-sage-btn", type: "button", className: "pfs-menu-item", text: "Exporter CSV Sage", onClick: function () { _sageMode = "csv"; exportToSageCsv(); } }),
+        el("button", { id: "pfs-pdf-btn", type: "button", className: "pfs-menu-item", text: "Exporter en PDF", onClick: exportToPdf })
+      ]),
+      el("button", { id: "pfs-sage-direct-btn", type: "button", text: "Créer dans Sage", onClick: function () { _sageMode = "bridge"; exportToSageCsv(); } })
     ]);
 
     modal.appendChild(header);
@@ -1977,6 +2064,7 @@
     const sageBtn = document.getElementById("pfs-sage-btn");
     const sageDirectBtn = document.getElementById("pfs-sage-direct-btn");
     const eeBtn = document.getElementById("pfs-ee-btn");
+    const x37Btn = document.getElementById("pfs-37-btn");
 
     if (state.loading) {
       body.appendChild(el("p", { className: "pfs-info", text: state.loadingText || "Chargement de la commande…" }));
@@ -1990,8 +2078,10 @@
       if (sageBtn) sageBtn.style.display = "none";
       if (sageDirectBtn) sageDirectBtn.style.display = "none";
       if (eeBtn) eeBtn.style.display = "none";
+      if (x37Btn) x37Btn.style.display = "none";
       const waBtnErr = document.getElementById("pfs-wa-btn");
       if (waBtnErr) waBtnErr.style.display = "none";
+      syncFooterMenus();
       return;
     }
     if (pdfBtn) pdfBtn.style.display = "";
@@ -2020,8 +2110,10 @@
     const hasAddress = Array.isArray(state.orderInfo && state.orderInfo.addresses)
       && state.orderInfo.addresses.some(function (a) { return a && Array.isArray(a.fields) && a.fields.length; });
     if (eeBtn) eeBtn.style.display = hasAddress ? "" : "none";
+    if (x37Btn) x37Btn.style.display = hasAddress ? "" : "none";
     const waBtn = document.getElementById("pfs-wa-btn");
     if (waBtn) waBtn.style.display = "";
+    syncFooterMenus();
 
     const rows = state.rows || [];
     const orderInfo = state.orderInfo || {};
@@ -2164,6 +2256,40 @@
         }
         if (!res || !res.ok) {
           alert("Erreur : " + ((res && res.error) || "impossible d'ouvrir l'onglet Easy Express."));
+        }
+      });
+    } catch (e) {
+      alert(CONTEXT_LOST_MSG);
+    }
+  }
+
+  // Ouvre l'étape « Adresses » d'un envoi 37 Express
+  // (https://www.37-express.com/qyfr/express/parcel/address/) dans un nouvel
+  // onglet. x37-content.js y cherche le client dans le carnet d'adresses
+  // (société + rue + CP + ville + pays), le sélectionne ou le crée, puis passe
+  // à l'étape « Colis ».
+  function open37ExpressFromOrder() {
+    if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
+    const orderInfo = _currentOrderInfo || {};
+    const receiver = eeExtractReceiverFromOrder(orderInfo);
+    if (!receiver) {
+      alert("Aucune adresse de livraison détectée sur cette commande.");
+      return;
+    }
+    const totalHT = _originalRows.reduce(function (s, r) { return s + r.quantite * r.prixUnitaire; }, 0);
+    const payload = {
+      receiver: receiver,
+      orderNo: orderInfo.orderNo || "",
+      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null
+    };
+    try {
+      chrome.runtime.sendMessage({ type: "OPEN_37_SHIPPING", payload: payload }, function (res) {
+        if (chrome.runtime.lastError) {
+          alert("Impossible d'ouvrir 37 Express : " + chrome.runtime.lastError.message);
+          return;
+        }
+        if (!res || !res.ok) {
+          alert("Erreur : " + ((res && res.error) || "impossible d'ouvrir l'onglet 37 Express."));
         }
       });
     } catch (e) {
@@ -2314,6 +2440,7 @@
     const panel = el("div", { id: "pfs-wa-panel", role: "dialog", "aria-label": "WhatsApp" });
     overlay.appendChild(panel);
     overlay.addEventListener("click", function (e) { if (e.target === overlay) waClose(); });
+    installPfsShield();
     document.addEventListener("keydown", waOnKey, true);
     document.body.appendChild(overlay);
 
@@ -3506,9 +3633,10 @@
 
   // Scanne orderInfo.addresses pour détecter des champs SIRET / TVA.
   // Pour TVA : accepte TVA FR en priorité, sinon toute TVA UE reconnue par VIES.
-  // Pour SIRET : 14 chiffres (séparateurs ignorés).
+  // Pour SIRET : 14 chiffres (séparateurs ignorés) ; à défaut un SIREN
+  // (9 chiffres) dans un champ SIRET / SIREN est aussi accepté.
   function extractSiretTvaFromOrderInfo(orderInfo) {
-    const found = { siret: "", tva: "", isFrench: false };
+    const found = { siret: "", siren: "", tva: "", isFrench: false };
     if (!orderInfo || !Array.isArray(orderInfo.addresses)) return found;
     const countryHints = [];
     for (const block of orderInfo.addresses) {
@@ -3517,9 +3645,10 @@
         if (!f || !f.label) continue;
         const label = String(f.label).toLowerCase();
         const value = String(f.value || "");
-        if (!found.siret && /siret/.test(label)) {
+        if (!found.siret && /siret|siren/.test(label)) {
           const digits = normalizeDigits(value);
           if (digits.length === 14) found.siret = digits;
+          else if (digits.length === 9 && !found.siren) found.siren = digits;
         }
         if (!found.tva && /tva/.test(label)) {
           const tvaFr = normalizeTvaFr(value);
@@ -3534,7 +3663,7 @@
       }
     }
     found.isFrench =
-      !!found.siret ||
+      !!found.siret || !!found.siren ||
       (!!found.tva && found.tva.startsWith("FR")) ||
       countryHints.some(function (c) { return /\bfrance\b|^fr$/i.test(c); });
     return found;
@@ -3594,8 +3723,8 @@
 
   function buildVerifEntrepriseSection(orderInfo) {
     const detected = extractSiretTvaFromOrderInfo(orderInfo);
-    // Pré-remplissage : SIRET > TVA (le SIRET donne plus d'infos côté annuaire).
-    const prefill = detected.siret || detected.tva || "";
+    // Pré-remplissage : SIRET > SIREN > TVA (le SIRET donne plus d'infos côté annuaire).
+    const prefill = detected.siret || detected.siren || detected.tva || "";
 
     const box = el("section", { className: "pfs-verif-box" });
     box.appendChild(el("h3", { className: "pfs-verif-title", text: "Vérification entreprise (Annuaire INSEE / VIES)" }));
@@ -3841,12 +3970,13 @@
     }
 
     btn.addEventListener("click", function () { runLookup(qInput.value); });
-    qInput.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        runLookup(qInput.value);
-      }
-    });
+    // Entrée = Vérifier (appelé par le bouclier clavier, cf. installPfsShield).
+    qInput.__pfsOnKey = function (e) {
+      if (e.key !== "Enter") return false;
+      e.preventDefault();
+      runLookup(qInput.value);
+      return true;
+    };
 
     if (prefill) {
       setTimeout(function () { runLookup(prefill); }, 0);

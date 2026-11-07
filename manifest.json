@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.33.3",
+  "version": "3.34.0",
   "permissions": ["storage"],
-  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères + Issyma. Ouvre Easy Express avec le client sélectionné (ou créé) dans le carnet d'adresses, envoie des messages WhatsApp à partir de modèles et crée les factures provisoires dans Sage 50 (via SageBridge).",
+  "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères + Issyma. Ouvre Easy Express avec le client sélectionné (ou créé) dans le carnet d'adresses, fait de même sur 37 Express, envoie des messages WhatsApp à partir de modèles et crée les factures provisoires dans Sage 50 (via SageBridge).",
   "host_permissions": [
     "https://wholesaler.parisfashionshops.com/*",
     "https://wholesaler-api.parisfashionshops.com/*",
@@ -22,6 +22,7 @@
     "https://issyma.fr/*",
     "https://www.issyma.fr/*",
     "https://easy-express.fr/*",
+    "https://www.37-express.com/*",
     "https://recherche-entreprises.api.gouv.fr/*",
     "https://ec.europa.eu/*",
     "http://localhost:3000/*",
@@ -63,6 +64,11 @@
       "run_at": "document_idle"
     },
     {
+      "matches": ["https://www.37-express.com/*"],
+      "js": ["x37-content.js"],
+      "run_at": "document_idle"
+    },
+    {
       "matches": [
         "https://web.mc.app/*",
         "https://mc2-h5.dokkr.net/*"
@@ -93,6 +99,10 @@
     {
       "resources": ["injected-ee.js"],
       "matches": ["https://easy-express.fr/*"]
+    },
+    {
+      "resources": ["injected-37.js"],
+      "matches": ["https://www.37-express.com/*"]
     },
     {
       "resources": ["injected-bm.js"],
