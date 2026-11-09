@@ -1922,7 +1922,8 @@
       el("button", { id: "pfs-wa-btn", type: "button", text: "WhatsApp", title: "Envoyer un message WhatsApp au client", onClick: function () { openWhatsAppPanel(); } }),
       buildFooterMenu("pfs-ship-menu", "Transporteurs", "Afficher la liste des transporteurs", [
         el("button", { id: "pfs-ee-btn", type: "button", className: "pfs-menu-item", text: "Easy Express", title: "Afficher la liste des transporteurs sur Easy Express", onClick: function () { openEasyExpressFromOrder(); } }),
-        el("button", { id: "pfs-37-btn", type: "button", className: "pfs-menu-item", text: "37 Express", title: "Afficher la liste des transporteurs sur 37 Express", onClick: function () { open37ExpressFromOrder(); } })
+        el("button", { id: "pfs-37-btn", type: "button", className: "pfs-menu-item", text: "37 Express", title: "Afficher la liste des transporteurs sur 37 Express", onClick: function () { open37ExpressFromOrder(); } }),
+        el("button", { id: "pfs-s365-btn", type: "button", className: "pfs-menu-item", text: "Smarty365", title: "Afficher la liste des transporteurs sur Smarty365", onClick: function () { openSmarty365FromOrder(); } })
       ]),
       buildFooterMenu("pfs-export-menu", "Exporter", "Exporter la facture regroupée", [
         el("button", { id: "pfs-sage-btn", type: "button", className: "pfs-menu-item", text: "Exporter CSV Sage", onClick: function () { _sageMode = "csv"; exportToSageCsv(); } }),
@@ -2065,6 +2066,7 @@
     const sageDirectBtn = document.getElementById("pfs-sage-direct-btn");
     const eeBtn = document.getElementById("pfs-ee-btn");
     const x37Btn = document.getElementById("pfs-37-btn");
+    const s365Btn = document.getElementById("pfs-s365-btn");
 
     if (state.loading) {
       body.appendChild(el("p", { className: "pfs-info", text: state.loadingText || "Chargement de la commande…" }));
@@ -2079,6 +2081,7 @@
       if (sageDirectBtn) sageDirectBtn.style.display = "none";
       if (eeBtn) eeBtn.style.display = "none";
       if (x37Btn) x37Btn.style.display = "none";
+      if (s365Btn) s365Btn.style.display = "none";
       const waBtnErr = document.getElementById("pfs-wa-btn");
       if (waBtnErr) waBtnErr.style.display = "none";
       syncFooterMenus();
@@ -2111,6 +2114,7 @@
       && state.orderInfo.addresses.some(function (a) { return a && Array.isArray(a.fields) && a.fields.length; });
     if (eeBtn) eeBtn.style.display = hasAddress ? "" : "none";
     if (x37Btn) x37Btn.style.display = hasAddress ? "" : "none";
+    if (s365Btn) s365Btn.style.display = hasAddress ? "" : "none";
     const waBtn = document.getElementById("pfs-wa-btn");
     if (waBtn) waBtn.style.display = "";
     syncFooterMenus();
@@ -2290,6 +2294,42 @@
         }
         if (!res || !res.ok) {
           alert("Erreur : " + ((res && res.error) || "impossible d'ouvrir l'onglet 37 Express."));
+        }
+      });
+    } catch (e) {
+      alert(CONTEXT_LOST_MSG);
+    }
+  }
+
+  // Ouvre la création d'un envoi de colis Smarty365
+  // (https://www.smarty365.com/dashboard/parcel/create) dans un nouvel onglet.
+  // smarty-content.js y cherche le client dans le carnet « Adresse de
+  // destination » (société/nom + rue + CP + ville + pays), le sélectionne ou
+  // le crée, passe à l'étape « Colis » ; sur la liste des transporteurs, la
+  // case « Assurance » est cochée partout, et à l'étape « Assurance » la
+  // valeur à assurer = total HT du regroupement.
+  function openSmarty365FromOrder() {
+    if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
+    const orderInfo = _currentOrderInfo || {};
+    const receiver = eeExtractReceiverFromOrder(orderInfo);
+    if (!receiver) {
+      alert("Aucune adresse de livraison détectée sur cette commande.");
+      return;
+    }
+    const totalHT = _originalRows.reduce(function (s, r) { return s + r.quantite * r.prixUnitaire; }, 0);
+    const payload = {
+      receiver: receiver,
+      orderNo: orderInfo.orderNo || "",
+      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null
+    };
+    try {
+      chrome.runtime.sendMessage({ type: "OPEN_S365_SHIPPING", payload: payload }, function (res) {
+        if (chrome.runtime.lastError) {
+          alert("Impossible d'ouvrir Smarty365 : " + chrome.runtime.lastError.message);
+          return;
+        }
+        if (!res || !res.ok) {
+          alert("Erreur : " + ((res && res.error) || "impossible d'ouvrir l'onglet Smarty365."));
         }
       });
     } catch (e) {

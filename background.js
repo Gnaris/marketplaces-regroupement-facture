@@ -260,6 +260,37 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return true;
   }
 
+  // Smarty365 (site web, application Vue) : même principe. L'onglet s'ouvre
+  // sur la création d'un envoi de colis ; smarty-content.js récupère le
+  // destinataire et la valeur du colis (S365_GET_PREFILL).
+  if (message.type === "OPEN_S365_SHIPPING") {
+    openSmarty365Shipping(message.payload || {})
+      .then(function (res) { sendResponse(res); })
+      .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
+    return true;
+  }
+
+  if (message.type === "S365_GET_PREFILL") {
+    s365GetPrefill(sender && sender.tab ? sender.tab.id : null)
+      .then(function (data) { sendResponse({ ok: true, data: data }); })
+      .catch(function (err) { sendResponse({ ok: false, error: (err && err.message) || String(err) }); });
+    return true;
+  }
+
+  // Destinataire choisi : on garde la valeur du colis pour l'étape
+  // « Assurance », mais un rechargement ne doit pas le resélectionner.
+  if (message.type === "S365_ADDRESS_DONE") {
+    s365MarkAddressDone(sender && sender.tab ? sender.tab.id : null)
+      .then(function () { sendResponse({ ok: true }); });
+    return true;
+  }
+
+  if (message.type === "S365_PREFILL_DONE") {
+    s365ClearPrefill(sender && sender.tab ? sender.tab.id : null)
+      .then(function () { sendResponse({ ok: true }); });
+    return true;
+  }
+
   if (message.type !== "FETCH_ORDER") return;
 
   const site = message.site;
@@ -776,7 +807,7 @@ function eeClearPrefill(tabId) {
 }
 
 // Nettoyage : un onglet fermé avant la fin ne laisse pas de destinataire orphelin.
-chrome.tabs.onRemoved.addListener(function (tabId) { eeClearPrefill(tabId); x37ClearPrefill(tabId); });
+chrome.tabs.onRemoved.addListener(function (tabId) { eeClearPrefill(tabId); x37ClearPrefill(tabId); s365ClearPrefill(tabId); });
 
 // ─────────────────────────────────────────────
 // 37 Express — ouverture de l'étape « Adresses » d'un envoi de colis
@@ -840,6 +871,70 @@ function x37ClearPrefill(tabId) {
   return new Promise(function (resolve) {
     if (tabId == null) return resolve();
     chrome.storage.local.remove([x37PrefillKey(tabId)], function () { resolve(); });
+  });
+}
+
+// ─────────────────────────────────────────────
+// Smarty365 — création d'un envoi de colis
+// (https://www.smarty365.com/dashboard/parcel/create, compte connecté).
+// Le destinataire et la valeur du colis sont rangés sous s365ShipPrefill_<tabId>
+// et lus par smarty-content.js.
+// ─────────────────────────────────────────────
+const S365_SHIPPING_URL = "https://www.smarty365.com/dashboard/parcel/create";
+const S365_PREFILL_TTL_MS = 60 * 60 * 1000;
+
+function s365PrefillKey(tabId) { return "s365ShipPrefill_" + tabId; }
+
+async function openSmarty365Shipping(payload) {
+  const tab = await new Promise(function (resolve, reject) {
+    chrome.tabs.create({ url: S365_SHIPPING_URL, active: true }, function (t) {
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+      else resolve(t);
+    });
+  });
+  const prefill = {
+    receiver: payload.receiver || {},
+    orderNo: payload.orderNo || "",
+    parcelValue: payload.parcelValue || null,
+    timestamp: Date.now()
+  };
+  await new Promise(function (resolve) {
+    const o = {}; o[s365PrefillKey(tab.id)] = prefill;
+    chrome.storage.local.set(o, function () { resolve(); });
+  });
+  return { ok: true };
+}
+
+async function s365GetPrefill(tabId) {
+  if (tabId == null) return null;
+  const key = s365PrefillKey(tabId);
+  const res = await new Promise(function (resolve) { chrome.storage.local.get([key], resolve); });
+  const p = res && res[key];
+  if (!p) return null;
+  if (Date.now() - (p.timestamp || 0) > S365_PREFILL_TTL_MS) {
+    await s365ClearPrefill(tabId);
+    return null;
+  }
+  return p;
+}
+
+async function s365MarkAddressDone(tabId) {
+  if (tabId == null) return;
+  const key = s365PrefillKey(tabId);
+  const res = await new Promise(function (resolve) { chrome.storage.local.get([key], resolve); });
+  const p = res && res[key];
+  if (!p) return;
+  p.addressDone = true;
+  await new Promise(function (resolve) {
+    const o = {}; o[key] = p;
+    chrome.storage.local.set(o, function () { resolve(); });
+  });
+}
+
+function s365ClearPrefill(tabId) {
+  return new Promise(function (resolve) {
+    if (tabId == null) return resolve();
+    chrome.storage.local.remove([s365PrefillKey(tabId)], function () { resolve(); });
   });
 }
 
