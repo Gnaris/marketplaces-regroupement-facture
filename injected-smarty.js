@@ -266,6 +266,16 @@
     "cote d ivoire": "CI", "ivory coast": "CI", "turquie": "TR", "turkey": "TR",
     "emirats arabes unis": "AE", "united arab emirates": "AE", "canada": "CA"
   };
+  // Codes ISO 3 fréquents (Faire envoie « DEU », « DNK »…) ; l'extension
+  // transmet normalement déjà le code ISO 2 (receiver.countryCode).
+  const ISO3 = {
+    FRA: "FR", DEU: "DE", BEL: "BE", NLD: "NL", LUX: "LU", CHE: "CH", ESP: "ES", ITA: "IT",
+    PRT: "PT", AUT: "AT", DNK: "DK", SWE: "SE", NOR: "NO", FIN: "FI", ISL: "IS", IRL: "IE",
+    GBR: "GB", POL: "PL", CZE: "CZ", SVK: "SK", SVN: "SI", HUN: "HU", ROU: "RO", BGR: "BG",
+    HRV: "HR", GRC: "GR", CYP: "CY", MLT: "MT", EST: "EE", LVA: "LV", LTU: "LT", MCO: "MC",
+    USA: "US", CAN: "CA", AUS: "AU", JPN: "JP", REU: "RE", GLP: "GP", MTQ: "MQ", GUF: "GF",
+    MYT: "YT", MAR: "MA", TUN: "TN", DZA: "DZ", TUR: "TR", ARE: "AE", HKG: "HK", CHN: "CN"
+  };
   // Liste des pays de l'application (sélecteurs « XX - Nom »), si présente.
   function countryList() {
     const out = [];
@@ -287,6 +297,7 @@
     const raw = clean(country);
     if (!raw) return "FR";
     if (/^[A-Za-z]{2}$/.test(raw)) return raw.toUpperCase() === "UK" ? "GB" : raw.toUpperCase();
+    if (/^[A-Za-z]{3}$/.test(raw) && ISO3[raw.toUpperCase()]) return ISO3[raw.toUpperCase()];
     const n = norm(raw);
     if (COUNTRY_ALIASES[n]) return COUNTRY_ALIASES[n];
     const list = countryList();
@@ -351,7 +362,7 @@
     let last = clean(r.lastName);
     // « Nom » est obligatoire sur Smarty365 : prénom seul → nom ; sinon société.
     if (!last) { last = first || company; first = last === first ? "" : first; }
-    const countryCode = toCode(r.country);
+    const countryCode = toCode(r.countryCode || r.country);
     const tel = phoneFields(r.phone, countryCode);
     return {
       company: company,

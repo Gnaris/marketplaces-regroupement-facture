@@ -26,6 +26,12 @@
 
   let cachedToken = null;
   let cachedFaireCustomer = null;
+  const faireCustomersByRetailer = new Map();
+  function faireCustomerRetailerToken(c) {
+    if (!c) return null;
+    const bcv = c.brand_customer_view || {};
+    return bcv.retailer_token || (bcv.brand_customer && bcv.brand_customer.retailer_token) || c.retailer_token || null;
+  }
   let cachedShopifyCsrf = null;
 
   if (site === "faire") {
@@ -39,6 +45,8 @@
       const d = event.data;
       if (d && d.source === "faire-regroup" && d.type === "FAIRE_CUSTOMER" && d.data) {
         cachedFaireCustomer = d.data;
+        const tok = d.retailerToken || faireCustomerRetailerToken(d.data);
+        if (tok) faireCustomersByRetailer.set(decodeURIComponent(tok), d.data);
       }
     });
   }
@@ -295,7 +303,11 @@
       if (!result.ok) {
         throw new Error(result.error || "Erreur inconnue");
       }
-      if (site === "faire" && !cachedFaireCustomer) {
+      // Faire : l'adresse est dans la commande (`shipping_address`) ; on
+      // n'attend `customer-details` que si elle manque (ancien format).
+      const faireHasShip = site === "faire" && result.data &&
+        (result.data.shipping_address || (result.data.brand_order && result.data.brand_order.shipping_address));
+      if (site === "faire" && !faireHasShip && !cachedFaireCustomer) {
         showModal({
           loading: true,
           loadingText: "Récupération de l'adresse de livraison Faire…"
@@ -309,7 +321,11 @@
       else if (site === "shopify") parsed = parseShopify(result.data);
       else if (site === "bj" || site === "issyma") parsed = parseBj(result.data);
       else if (site === "bm") parsed = parseBm(result.data);
-      else parsed = parseFaire(result.data, cachedFaireCustomer);
+      else {
+        const rTok = result.data && ((result.data.brand_order && result.data.brand_order.retailer_token) ||
+          (result.data.retailer && result.data.retailer.token));
+        parsed = parseFaire(result.data, (rTok && faireCustomersByRetailer.get(rTok)) || cachedFaireCustomer);
+      }
       showModal({ rows: parsed.rows, orderInfo: parsed.orderInfo });
     } catch (e) {
       showModal({ error: e && e.message ? e.message : String(e) });
@@ -400,7 +416,97 @@
     if (value == null) return;
     const v = String(value).replace(/\s+/g, " ").trim();
     if (!v) return;
+    // Pays : les plateformes envoient tantôt un code ISO 2 (« DE »), ISO 3
+    // (Faire : « DEU », « DNK »), tantôt un nom FR / EN / local. On affiche
+    // le nom français et on garde le code ISO 2 (`iso2`) pour les
+    // transporteurs, Sage et WhatsApp (3.35.1).
+    if (label === "Pays") {
+      const iso2 = countryToIso2(v);
+      if (iso2) {
+        fields.push({ label: label, value: countryFrName(iso2) || v, iso2: iso2 });
+        return;
+      }
+    }
     fields.push({ label: label || null, value: v });
+  }
+
+  // ─── Pays : code ISO 2 / ISO 3 / nom (FR, EN, DE, ES, IT, NL…) → ISO 2 ───
+  const ISO3_TO_ISO2 = (function () {
+    const m = {};
+    "ABWAW AFGAF AGOAO AIAAI ALAAX ALBAL ANDAD AREAE ARGAR ARMAM ASMAS ATAAQ ATFTF ATGAG AUSAU AUTAT AZEAZ BDIBI BELBE BENBJ BESBQ BFABF BGDBD BGRBG BHRBH BHSBS BIHBA BLMBL BLRBY BLZBZ BMUBM BOLBO BRABR BRBBB BRNBN BTNBT BVTBV BWABW CAFCF CANCA CCKCC CHECH CHLCL CHNCN CIVCI CMRCM CODCD COGCG COKCK COLCO COMKM CPVCV CRICR CUBCU CUWCW CXRCX CYMKY CYPCY CZECZ DEUDE DJIDJ DMADM DNKDK DOMDO DZADZ ECUEC EGYEG ERIER ESHEH ESPES ESTEE ETHET FINFI FJIFJ FLKFK FRAFR FROFO FSMFM GABGA GBRGB GEOGE GGYGG GHAGH GIBGI GINGN GLPGP GMBGM GNBGW GNQGQ GRCGR GRDGD GRLGL GTMGT GUFGF GUMGU GUYGY HKGHK HMDHM HNDHN HRVHR HTIHT HUNHU IDNID IMNIM INDIN IOTIO IRLIE IRNIR IRQIQ ISLIS ISRIL ITAIT JAMJM JEYJE JORJO JPNJP KAZKZ KENKE KGZKG KHMKH KIRKI KNAKN KORKR KWTKW LAOLA LBNLB LBRLR LBYLY LCALC LIELI LKALK LSOLS LTULT LUXLU LVALV MACMO MAFMF MARMA MCOMC MDAMD MDGMG MDVMV MEXMX MHLMH MKDMK MLIML MLTMT MMRMM MNEME MNGMN MNPMP MOZMZ MRTMR MSRMS MTQMQ MUSMU MWIMW MYSMY MYTYT NAMNA NCLNC NERNE NFKNF NGANG NICNI NIUNU NLDNL NORNO NPLNP NRUNR NZLNZ OMNOM PAKPK PANPA PCNPN PERPE PHLPH PLWPW PNGPG POLPL PRIPR PRKKP PRTPT PRYPY PSEPS PYFPF QATQA REURE ROURO RUSRU RWARW SAUSA SDNSD SENSN SGPSG SGSGS SHNSH SJMSJ SLBSB SLESL SLVSV SMRSM SOMSO SPMPM SRBRS SSDSS STPST SURSR SVKSK SVNSI SWESE SWZSZ SXMSX SYCSC SYRSY TCATC TCDTD TGOTG THATH TJKTJ TKLTK TKMTM TLSTL TONTO TTOTT TUNTN TURTR TUVTV TWNTW TZATZ UGAUG UKRUA UMIUM URYUY USAUS UZBUZ VATVA VCTVC VENVE VGBVG VIRVI VNMVN VUTVU WLFWF WSMWS YEMYE ZAFZA ZMBZM ZWEZW".split(" ").forEach(function (p) { m[p.slice(0, 3)] = p.slice(3); });
+    return m;
+  })();
+  const COUNTRY_EXTRA_ALIASES = {
+    "uk": "GB", "angleterre": "GB", "england": "GB", "ecosse": "GB", "scotland": "GB",
+    "pays de galles": "GB", "wales": "GB", "grande bretagne": "GB", "great britain": "GB",
+    "irlande du nord": "GB", "northern ireland": "GB", "hollande": "NL", "holland": "NL",
+    "usa": "US", "etats unis d amerique": "US", "united states of america": "US",
+    "france metropolitaine": "FR", "republique tcheque": "CZ", "czech republic": "CZ",
+    "coree du sud": "KR", "south korea": "KR", "korea": "KR", "russie": "RU", "russia": "RU",
+    "emirats arabes unis": "AE", "uae": "AE", "turkiye": "TR", "la reunion": "RE"
+  };
+  let _countryNameIndex = null;
+  let _iso2Set = null;
+  function isKnownIso2(c) {
+    if (!_iso2Set) {
+      _iso2Set = {};
+      Object.keys(ISO3_TO_ISO2).forEach(function (k) { _iso2Set[ISO3_TO_ISO2[k]] = true; });
+      _iso2Set.XK = true; // Kosovo
+    }
+    return !!_iso2Set[c];
+  }
+  function countryNormKey(s) {
+    return String(s == null ? "" : s).normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+  function countryNameIndex() {
+    if (_countryNameIndex) return _countryNameIndex;
+    const idx = {};
+    const codes = Object.keys(ISO3_TO_ISO2).map(function (k) { return ISO3_TO_ISO2[k]; });
+    ["fr", "en", "de", "es", "it", "nl", "pt", "da", "sv", "pl"].forEach(function (lang) {
+      let dn = null;
+      try { dn = new Intl.DisplayNames([lang], { type: "region" }); } catch (e) { dn = null; }
+      if (!dn) return;
+      codes.forEach(function (c) {
+        try {
+          const k = countryNormKey(dn.of(c));
+          if (k && !idx[k]) idx[k] = c;
+        } catch (e) { /* ignore */ }
+      });
+    });
+    Object.keys(COUNTRY_EXTRA_ALIASES).forEach(function (k) { idx[k] = COUNTRY_EXTRA_ALIASES[k]; });
+    _countryNameIndex = idx;
+    return idx;
+  }
+  function countryToIso2(value) {
+    const raw = String(value == null ? "" : value).trim();
+    if (!raw) return "";
+    if (/^[A-Za-z]{2}$/.test(raw)) {
+      const up = raw.toUpperCase();
+      if (up === "UK") return "GB";
+      if (up === "EL") return "GR";
+      return isKnownIso2(up) ? up : "";
+    }
+    if (/^[A-Za-z]{3}$/.test(raw) && ISO3_TO_ISO2[raw.toUpperCase()]) return ISO3_TO_ISO2[raw.toUpperCase()];
+    const k = countryNormKey(raw);
+    const idx = countryNameIndex();
+    if (idx[k]) return idx[k];
+    // « XX - Nom » ou « Nom (XX) »
+    let m = raw.match(/^([A-Z]{2})\s*-\s/) || raw.match(/\(([A-Z]{2,3})\)\s*$/);
+    if (m) return countryToIso2(m[1]);
+    return "";
+  }
+  function countryFrName(iso2) {
+    try { return new Intl.DisplayNames(["fr"], { type: "region" }).of(iso2) || ""; } catch (e) { return ""; }
+  }
+  // Pays d'un bloc d'adresse : { name, code } (code ISO 2, vide si inconnu).
+  function eeCountryOf(fields) {
+    for (const f of fields || []) {
+      if (!f || !f.label || String(f.label).toLowerCase().indexOf("pays") === -1) continue;
+      const name = f.value == null ? "" : String(f.value).trim();
+      return { name: name, code: f.iso2 || countryToIso2(name) };
+    }
+    return { name: "", code: "" };
   }
 
   const CATEGORY_FAMILIES = [
@@ -1119,7 +1225,43 @@
       ));
       return fields.length ? fields : null;
     }
-    if (customerData) {
+    // 3.35.1 — Adresses : la réponse /api/brand-order/{id}/details contient
+    // elle-même l'adresse de livraison DE CETTE COMMANDE (`shipping_address`,
+    // pays en ISO 3 : « DEU », « DNK »…), le détaillant (`retailer` : nom,
+    // adresse légale) et l'acheteur (`user` : nom, email, téléphone).
+    // Avant, on prenait `default_shipping_address` du dernier
+    // `customer-details` capté sur la page : en passant d'une commande à
+    // l'autre dans le portail, c'était parfois le client PRÉCÉDENT (ex. un
+    // client allemand affiché avec l'adresse française de la commande
+    // d'avant). `customer-details` ne sert plus qu'en repli, et seulement
+    // s'il concerne le même détaillant (retailer_token).
+    const bo = json.brand_order || {};
+    const orderRetailerToken = bo.retailer_token || (json.retailer && json.retailer.token) || (json.user && json.user.retailer_token) || null;
+    const orderShip = json.shipping_address || bo.shipping_address || null;
+    const retailer = json.retailer || {};
+    const buyer = json.user || {};
+    if (orderShip && typeof orderShip === "object") {
+      const storeName = firstNonEmpty(retailer.name, orderShip.name) || "";
+      const contactName = firstNonEmpty(buyer.name, [buyer.first_name, buyer.last_name].filter(Boolean).join(" ")) || "";
+      // `shipping_address.name` est l'étiquette du colis (souvent « Butik
+      // <boutique> ») : le contact affiché est l'acheteur (`user.name`).
+      const withContact = function (a) {
+        return a && typeof a === "object" ? Object.assign({}, a, contactName ? { name: contactName } : {}) : a;
+      };
+      const shipFields = faireAddrToFields(Object.assign(withContact(orderShip), {
+        phone_number: firstNonEmpty(orderShip.phone_number, buyer.phone_number),
+        email: firstNonEmpty(orderShip.email, buyer.email_address)
+      }), storeName, contactName);
+      if (shipFields) faireAddresses.push({ title: "Adresse de livraison", fields: shipFields });
+      const rdOrder = Object.assign({}, retailer.retailer_details || {}, {
+        address: withContact((retailer.retailer_details && retailer.retailer_details.address) || retailer.address || null),
+        email: buyer.email_address || null
+      });
+      const matching = customerData && faireCustomerRetailerToken(customerData) === orderRetailerToken ? customerData : null;
+      const bcv = (matching && matching.brand_customer_view) || { store_name: storeName, contact_name: contactName };
+      const billFields = faireBillingFields(rdOrder, bcv, orderShip, storeName, contactName);
+      if (billFields) faireAddresses.push({ title: "Adresse de facturation", fields: billFields });
+    } else if (customerData && (!orderRetailerToken || faireCustomerRetailerToken(customerData) === orderRetailerToken)) {
       try {
         console.log(
           "[Regroupement][Faire] customerData interceptée — clés racine :",
@@ -1130,9 +1272,6 @@
       const bcv = customerData.brand_customer_view || {};
       const storeName = bcv.store_name || "";
       const contactName = bcv.contact_name || "";
-      // Faire a déjà renommé cette route une fois (31/08/2026). La forme du
-      // payload peut dériver : on cherche l'adresse d'expédition à plusieurs
-      // emplacements plausibles avant d'abandonner.
       const rdRaw = customerData.retailer_details || {};
       const shipping =
         customerData.default_shipping_address
@@ -1143,21 +1282,11 @@
         || rdRaw.address
         || null;
       const shipFields = faireAddrToFields(shipping, storeName, contactName);
-      if (shipFields) {
-        faireAddresses.push({ title: "Adresse de livraison", fields: shipFields });
-      } else {
-        try {
-          console.warn(
-            "[Regroupement][Faire] Aucune adresse de livraison trouvée dans customerData — la forme du payload a probablement changé. Clés disponibles :",
-            Object.keys(customerData || {}),
-            "retailer_details :", rdRaw
-          );
-        } catch (e) { /* noop */ }
-      }
+      if (shipFields) faireAddresses.push({ title: "Adresse de livraison", fields: shipFields });
       const billFields = faireBillingFields(rdRaw, bcv, shipping, storeName, contactName);
       if (billFields) faireAddresses.push({ title: "Adresse de facturation", fields: billFields });
     } else {
-      console.log("[Faire] Aucune donnée customer interceptée (timeout 8 s). Rechargez la page de la commande pour que la requête soit captée.");
+      console.log("[Faire] Adresse introuvable : ni `shipping_address` dans la commande, ni données client du même détaillant. Rechargez la page de la commande.");
     }
 
     return {
@@ -2225,7 +2354,8 @@
       complement: eeFieldByLabel(fields, ["complément", "complement"]),
       postalCode: eeFieldByLabel(fields, ["code postal", "cp"]),
       city: eeFieldByLabel(fields, ["ville"]),
-      country: eeFieldByLabel(fields, ["pays"]) || "France",
+      country: eeCountryOf(fields).name || "France",
+      countryCode: eeCountryOf(fields).code || (eeCountryOf(fields).name ? "" : "FR"),
       phone: eeFieldByLabel(fields, ["téléphone", "telephone", "tél", "tel"]),
       email: eeFieldByLabel(fields, ["email", "e-mail", "courriel"]),
       siret: eeFieldByLabel(fields, ["siret", "n° d'enregistrement", "enregistrement"]),
@@ -2359,7 +2489,11 @@
     es: "34", espagne: "34", spain: "34", it: "39", italie: "39", italy: "39", nl: "31",
     "pays-bas": "31", netherlands: "31", pt: "351", portugal: "351", at: "43", autriche: "43",
     austria: "43", gb: "44", uk: "44", "royaume-uni": "44", "united kingdom": "44",
-    ie: "353", irlande: "353", ireland: "353", mc: "377", monaco: "377"
+    ie: "353", irlande: "353", ireland: "353", mc: "377", monaco: "377",
+    dk: "45", se: "46", no: "47", fi: "358", pl: "48", cz: "420", gr: "30", ro: "40",
+    hu: "36", sk: "421", si: "386", hr: "385", bg: "359", lt: "370", lv: "371", ee: "372",
+    cy: "357", mt: "356", us: "1", ca: "1", ma: "212", tn: "216", dz: "213", re: "262",
+    gp: "590", mq: "596", gf: "594", yt: "262"
   };
 
   function waNormCountry(c) {
@@ -2373,7 +2507,8 @@
     d = d.replace(/\D/g, "");
     if (d.indexOf("00") === 0) return d.slice(2);
     if (d.indexOf("0") === 0) {
-      const code = WA_DIAL_CODES[waNormCountry(country)] || "33";
+      const code = WA_DIAL_CODES[waNormCountry(country)] ||
+        WA_DIAL_CODES[countryToIso2(country).toLowerCase()] || "33";
       return code + d.slice(1);
     }
     return d;
@@ -3153,7 +3288,7 @@
       address2: eeFieldByLabel(fields, ["complément", "complement"]),
       postalCode: eeFieldByLabel(fields, ["code postal", "cp"]),
       city: eeFieldByLabel(fields, ["ville"]),
-      country: eeFieldByLabel(fields, ["pays"]) || "France",
+      country: eeCountryOf(fields).code || eeCountryOf(fields).name || "France",
       phone: eeFieldByLabel(fields, ["téléphone", "telephone", "tél", "tel"]),
       email: eeFieldByLabel(fields, ["email", "e-mail", "courriel"]),
       siret: eeFieldByLabel(fields, ["siret", "n° d'enregistrement", "enregistrement"]),

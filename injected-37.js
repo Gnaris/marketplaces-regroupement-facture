@@ -194,7 +194,7 @@
       street: ["", clean(r.street), clean(r.complement)],
       postcode: String(r.postalCode || "").trim(),
       city: clean(r.city),
-      country_id: toCode(r.country),
+      country_id: toCode(r.countryCode || r.country),
       telephone: String(r.phone || "").replace(/[^\d+ ()-]/g, "").trim(),
       email: String(r.email || "").trim(),
       vat_id: String(r.vat || "").replace(/\s+/g, "").toUpperCase(),

@@ -156,7 +156,7 @@
       building: String(r.complement || "").trim(),
       postcode: String(r.postalCode || "").trim(),
       city: String(r.city || "").trim(),
-      country: toIso(r.country),
+      country: toIso(r.countryCode || r.country),
       mobile: String(r.phone || "").trim(),
       email: String(r.email || "").trim(),
       siret: String(r.siret || "").replace(/\s+/g, ""),
