@@ -7,7 +7,8 @@
     validateShopKey: $("validateShopKey"),
     shopKeyStatus: $("shopKeyStatus"),
     waShopName: $("waShopName"),
-    sageSimpleDesc: $("sageSimpleDesc"),
+    sageDescRef: $("sageDescRef"),
+    sageDescColors: $("sageDescColors"),
     save: $("save"),
     saveStatus: $("saveStatus")
   };
@@ -19,10 +20,14 @@
   }
 
   function load() {
-    chrome.storage.sync.get(["sageShopKey", "waShopName", "sageSimpleDesc"], function (res) {
+    chrome.storage.sync.get(["sageShopKey", "waShopName", "sageSimpleDesc", "sageDescRef", "sageDescColors"], function (res) {
       el.shopKey.value = res.sageShopKey || "";
       el.waShopName.value = res.waShopName || "";
-      el.sageSimpleDesc.checked = !!res.sageSimpleDesc;
+      // Par défaut : référence et couleurs affichées ; l'ancienne case
+      // « Description simple » (3.37.0) cochée = les deux décochées.
+      const legacy = res.sageSimpleDesc === true;
+      el.sageDescRef.checked = typeof res.sageDescRef === "boolean" ? res.sageDescRef : !legacy;
+      el.sageDescColors.checked = typeof res.sageDescColors === "boolean" ? res.sageDescColors : !legacy;
       setStatus(el.shopKeyStatus, res.sageShopKey ? "Mot de passe enregistré (non revérifié)" : "Aucun mot de passe enregistré", "muted");
     });
     // Nettoyage des anciens réglages de l'API Easy-Express (retirée en 3.31.0).
@@ -55,7 +60,7 @@
 
   // ─── Enregistrer ───────────────────────────────────────────────────
   el.save.addEventListener("click", function () {
-    chrome.storage.sync.set({ sageShopKey: el.shopKey.value.trim(), waShopName: el.waShopName.value.trim(), sageSimpleDesc: el.sageSimpleDesc.checked }, function () {
+    chrome.storage.sync.set({ sageShopKey: el.shopKey.value.trim(), waShopName: el.waShopName.value.trim(), sageDescRef: el.sageDescRef.checked, sageDescColors: el.sageDescColors.checked }, function () {
       if (chrome.runtime.lastError) {
         setStatus(el.saveStatus, "Erreur stockage : " + chrome.runtime.lastError.message, "err");
       } else {

@@ -3263,15 +3263,15 @@
   // Regroupe les items résolus en lignes Sage : une ligne par (article Sage,
   // prix, référence produit), avec le détail des couleurs et la quantité
   // totale. Partagé par l'export CSV et la création directe (SageBridge).
-  // `simple` (option « Description simple », 3.37.0) : la référence produit
+  // `noRef` (option « Référence produit » décochée, 3.38.0) : la référence
   // n'est pas affichée, donc les lignes d'un même article au même prix sont
   // fusionnées (sinon plusieurs lignes identiques, une par référence).
-  function aggregateSageItems(items, simple) {
+  function aggregateSageItems(items, noRef) {
     const agg = new Map();
     const missing = [];
     for (const it of items) {
       const code = it.code || "";
-      const refKey = simple ? "" : (it.ref || it.name || "");
+      const refKey = noRef ? "" : (it.ref || it.name || "");
       const key = code + "||" + it.prixUnitaire.toFixed(4) + "||" + refKey;
       if (!agg.has(key)) {
         agg.set(key, {
@@ -3357,23 +3357,26 @@
   // seule la description change : texte brut multi-lignes (le COM stocke le
   // RTF tel quel, vérifié le 19/10/2026), « LIBELLÉ - réf » puis une ligne
   // par couleur.
-  // Option « Description simple » (3.37.0, réglage `sageSimpleDesc` dans les
-  // Options) : ni référence ni couleurs, la description de la ligne est la
-  // désignation de l'article dans Sage 50 (`articleNames` : code → nom, lu par
-  // GET /articles de SageBridge).
-  function buildSageBridgePayload(items, simple, articleNames) {
-    const aggregated = aggregateSageItems(items, simple);
+  // Options « Référence produit » / « Couleurs » (3.38.0, réglages
+  // `sageDescRef` / `sageDescColors`, cochés par défaut) : `opt.ref` ajoute
+  // « - réf » au libellé, `opt.colors` une ligne « Couleur xN » par couleur.
+  // Les deux décochées : la description est la désignation de l'article dans
+  // Sage 50 (`articleNames` : code → nom, lu par GET /articles de SageBridge).
+  function buildSageBridgePayload(items, opt, articleNames) {
+    const aggregated = aggregateSageItems(items, !opt.ref);
     const lines = [];
     for (const l of aggregated.list) {
       let desc;
-      if (simple) {
+      if (!opt.ref && !opt.colors) {
         desc = (articleNames && articleNames[l.code]) || "";
       } else {
         const label = l.descLabel || sageArticleLabel(l.code);
         desc = label ? label.toUpperCase() : "";
-        if (l.ref) desc += (desc ? " - " : "") + l.ref;
-        for (const entry of l.colors.entries()) {
-          desc += "\n" + entry[0] + " x" + entry[1];
+        if (opt.ref && l.ref) desc += (desc ? " - " : "") + l.ref;
+        if (opt.colors) {
+          for (const entry of l.colors.entries()) {
+            desc += "\n" + entry[0] + " x" + entry[1];
+          }
         }
       }
       lines.push({
@@ -3471,12 +3474,18 @@
   async function finishSageBridge(items) {
     const btn = document.getElementById("pfs-sage-direct-btn");
     const opts = await new Promise(function (resolve) {
-      try { chrome.storage.sync.get(["sageSimpleDesc"], function (r) { resolve(r || {}); }); }
+      try { chrome.storage.sync.get(["sageSimpleDesc", "sageDescRef", "sageDescColors"], function (r) { resolve(r || {}); }); }
       catch (e) { resolve({}); }
     });
-    const simple = !!opts.sageSimpleDesc;
+    // Par défaut tout est affiché ; l'ancienne case « Description simple »
+    // (3.37.0) cochée vaut les deux options décochées.
+    const legacy = opts.sageSimpleDesc === true;
+    const descOpt = {
+      ref: typeof opts.sageDescRef === "boolean" ? opts.sageDescRef : !legacy,
+      colors: typeof opts.sageDescColors === "boolean" ? opts.sageDescColors : !legacy
+    };
     let articleNames = null;
-    if (simple) {
+    if (!descOpt.ref && !descOpt.colors) {
       // Désignations des articles Sage. Si la liste n'arrive pas, la
       // description est envoyée vide : SageBridge ne l'écrit alors pas.
       const listed = await sageListArticles();
@@ -3485,7 +3494,7 @@
         if (a && a.code) articleNames[a.code] = a.nom || "";
       });
     }
-    const built = buildSageBridgePayload(items, simple, articleNames);
+    const built = buildSageBridgePayload(items, descOpt, articleNames);
     if (built.missing.length) {
       sageBridgeStatus(
         "Impossible de créer la facture : aucun code article Sage pour " + built.missing.join(", ") +

@@ -94,13 +94,16 @@
     <section class="card">
       <h2>Factures Sage — description des lignes</h2>
       <p class="hint">
-        Pour le bouton « Créer dans Sage ». Cochée, chaque ligne de la facture
-        porte seulement la désignation de l'article Sage, sans la référence
-        produit ni le détail des couleurs ; les lignes d'un même article au
-        même prix sont réunies en une seule.
+        Pour le bouton « Créer dans Sage » : ce que la description de chaque
+        ligne affiche en plus du libellé. Sans la référence, les lignes d'un
+        même article au même prix sont réunies en une seule. Les deux cases
+        décochées : seule la désignation de l'article Sage est écrite.
       </p>
       <div class="row">
-        <label><input id="sageSimpleDesc" type="checkbox" /> Description simple (sans référence ni couleurs)</label>
+        <label><input id="sageDescRef" type="checkbox" /> Référence produit</label>
+      </div>
+      <div class="row">
+        <label><input id="sageDescColors" type="checkbox" /> Couleurs (détail « Doré x2 »…)</label>
       </div>
     </section>
 
