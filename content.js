@@ -857,6 +857,7 @@
       const attr = detailJson.data.attributes;
       if (attr.reference) orderNo = String(attr.reference);
       const ttcCandidates = [
+        attr.totals && attr.totals.totalAmountWithVat,
         attr.totalIncludingTaxes,
         attr.totalInclTax,
         attr.grandTotal,
@@ -880,9 +881,12 @@
         pushField(shipFields, "Code postal", addr.postalCode);
         pushField(shipFields, "Ville", addr.city);
         pushField(shipFields, "Pays", addr.countryCode);
-        pushField(shipFields, "Téléphone", cp.phoneNumber);
-        pushField(shipFields, "Email", cp.email);
+        // Ankorstore laisse souvent contactPerson.phoneNumber / email à null :
+        // le téléphone et l'e-mail affichés sur la page viennent de la fiche
+        // du revendeur (attr.retailer.phone_number / email) — vérifié 09/11/2026.
         const retailer = attr.retailer || {};
+        pushField(shipFields, "Téléphone", firstNonEmpty(cp.phoneNumber, retailer.phone_number, retailer.phoneNumber));
+        pushField(shipFields, "Email", firstNonEmpty(cp.email, retailer.email));
         const biz = retailer.business || {};
         pushField(shipFields, "N° TVA", biz.vat_number);
         pushField(shipFields, "SIRET", biz.tax_number);
@@ -1910,6 +1914,9 @@
   // Destination de l'export Sage : "csv" (fichier à importer) ou "bridge"
   // (création directe de la facture provisoire via SageBridge, 3.24.0).
   let _sageMode = "csv";
+  // Dimensions / poids saisis dans le panneau « Colis » (3.36.0), gardés tant
+  // que le modal reste sur la même commande (remis à zéro par showModal).
+  let _parcelDims = {};
 
   function getSecretFactor(clicks) {
     if (clicks < 3) return 1;
@@ -1969,7 +1976,7 @@
   // focus / souris qui vise notre interface, on arrête la propagation (la
   // saisie elle-même — action par défaut — n'est pas bloquée) et on traite
   // nous-mêmes nos raccourcis (Échap, Entrée = Vérifier) via node.__pfsOnKey.
-  const PFS_UI_SELECTOR = "#pfs-modal-overlay, #pfs-wa-overlay, #pfs-sage-picker";
+  const PFS_UI_SELECTOR = "#pfs-modal-overlay, #pfs-wa-overlay, #pfs-parcel-overlay, #pfs-sage-picker";
   let pfsShieldInstalled = false;
   function pfsOwnTarget(t) {
     return t && t.nodeType === 1 && typeof t.closest === "function" ? t.closest(PFS_UI_SELECTOR) : null;
@@ -1981,6 +1988,7 @@
     if (e.key !== "Escape") return;
     if (document.querySelector(".pfs-menu.pfs-menu-open")) { closeFooterMenus(null); return; }
     if (document.getElementById("pfs-wa-overlay")) { waClose(); return; }
+    if (document.getElementById("pfs-parcel-overlay")) { parcelClose(); return; }
     hideModal();
   }
   function installPfsShield() {
@@ -2050,9 +2058,9 @@
       imgStrip,
       el("button", { id: "pfs-wa-btn", type: "button", text: "WhatsApp", title: "Envoyer un message WhatsApp au client", onClick: function () { openWhatsAppPanel(); } }),
       buildFooterMenu("pfs-ship-menu", "Transporteurs", "Afficher la liste des transporteurs", [
-        el("button", { id: "pfs-ee-btn", type: "button", className: "pfs-menu-item", text: "Easy Express", title: "Afficher la liste des transporteurs sur Easy Express", onClick: function () { openEasyExpressFromOrder(); } }),
-        el("button", { id: "pfs-37-btn", type: "button", className: "pfs-menu-item", text: "37 Express", title: "Afficher la liste des transporteurs sur 37 Express", onClick: function () { open37ExpressFromOrder(); } }),
-        el("button", { id: "pfs-s365-btn", type: "button", className: "pfs-menu-item", text: "Smarty365", title: "Afficher la liste des transporteurs sur Smarty365", onClick: function () { openSmarty365FromOrder(); } })
+        el("button", { id: "pfs-ee-btn", type: "button", className: "pfs-menu-item", text: "Easy Express", title: "Afficher la liste des transporteurs sur Easy Express", onClick: function () { openParcelPanel("ee"); } }),
+        el("button", { id: "pfs-37-btn", type: "button", className: "pfs-menu-item", text: "37 Express", title: "Afficher la liste des transporteurs sur 37 Express", onClick: function () { openParcelPanel("x37"); } }),
+        el("button", { id: "pfs-s365-btn", type: "button", className: "pfs-menu-item", text: "Smarty365", title: "Afficher la liste des transporteurs sur Smarty365", onClick: function () { openParcelPanel("s365"); } })
       ]),
       buildFooterMenu("pfs-export-menu", "Exporter", "Exporter la facture regroupée", [
         el("button", { id: "pfs-sage-btn", type: "button", className: "pfs-menu-item", text: "Exporter CSV Sage", onClick: function () { _sageMode = "csv"; exportToSageCsv(); } }),
@@ -2190,6 +2198,7 @@
     _originalRows = [];
     _currentOrderInfo = null;
     _secretClickCount = 0;
+    _parcelDims = {};
     const pdfBtn = document.getElementById("pfs-pdf-btn");
     const sageBtn = document.getElementById("pfs-sage-btn");
     const sageDirectBtn = document.getElementById("pfs-sage-direct-btn");
@@ -2364,10 +2373,111 @@
     };
   }
 
+  // ─── Panneau « Colis » avant l'ouverture d'un transporteur (3.36.0) ───
+  // Longueur, largeur, hauteur (cm) et poids (kg), tous facultatifs : chaque
+  // valeur saisie est reportée dans le formulaire « Colis » du site du
+  // transporteur (Easy Express, 37 Express, Smarty365) ; le reste se complète
+  // sur le site. Rien de saisi = ouverture comme avant.
+  const PARCEL_CARRIERS = {
+    ee: { label: "Easy Express", open: function (p) { openEasyExpressFromOrder(p); } },
+    x37: { label: "37 Express", open: function (p) { open37ExpressFromOrder(p); } },
+    s365: { label: "Smarty365", open: function (p) { openSmarty365FromOrder(p); } }
+  };
+  const PARCEL_FIELDS = [
+    { key: "length", label: "Longueur", unit: "cm" },
+    { key: "width", label: "Largeur", unit: "cm" },
+    { key: "height", label: "Hauteur", unit: "cm" },
+    { key: "weight", label: "Poids", unit: "kg" }
+  ];
+
+  // "12,5" → 12.5 ; vide → null ; invalide → NaN.
+  function parseParcelNumber(v) {
+    const t = String(v == null ? "" : v).trim().replace(/\s+/g, "").replace(",", ".");
+    if (!t) return null;
+    if (!/^\d+(\.\d+)?$/.test(t)) return NaN;
+    const n = parseFloat(t);
+    return n > 0 ? n : NaN;
+  }
+
+  function parcelClose() {
+    const o = document.getElementById("pfs-parcel-overlay");
+    if (o) o.remove();
+  }
+
+  function openParcelPanel(carrierKey) {
+    if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
+    const carrier = PARCEL_CARRIERS[carrierKey];
+    if (!carrier) return;
+    if (!eeExtractReceiverFromOrder(_currentOrderInfo || {})) {
+      alert("Aucune adresse de livraison détectée sur cette commande.");
+      return;
+    }
+    closeFooterMenus(null);
+    parcelClose();
+    installPfsShield();
+
+    const overlay = el("div", { id: "pfs-parcel-overlay" });
+    const panel = el("div", { id: "pfs-parcel-panel", role: "dialog", "aria-label": "Colis — " + carrier.label });
+    overlay.appendChild(panel);
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) parcelClose(); });
+
+    panel.appendChild(el("div", { className: "pfs-wa-head" }, [
+      el("h3", { text: "Colis — " + carrier.label }),
+      el("button", { type: "button", className: "pfs-wa-x", text: "×", title: "Fermer", onClick: parcelClose })
+    ]));
+
+    const body = el("div", { className: "pfs-wa-body" });
+    body.appendChild(el("div", { className: "pfs-parcel-intro", text: "Facultatif : ce que vous remplissez ici est saisi automatiquement sur " + carrier.label + ", le reste se complète sur le site." }));
+    const grid = el("div", { className: "pfs-parcel-grid" });
+    const inputs = {};
+    PARCEL_FIELDS.forEach(function (f) {
+      const input = el("input", { type: "text", inputmode: "decimal", autocomplete: "off", className: "pfs-wa-input", placeholder: f.unit });
+      const v = _parcelDims[f.key];
+      input.value = v != null ? String(v).replace(".", ",") : "";
+      inputs[f.key] = input;
+      grid.appendChild(el("label", { className: "pfs-wa-field" }, [f.label + " (" + f.unit + ")", input]));
+    });
+    body.appendChild(grid);
+    panel.appendChild(body);
+
+    const status = el("div", { className: "pfs-wa-status" });
+    const go = el("button", { type: "button", className: "pfs-wa-send pfs-parcel-go", text: "Ouvrir " + carrier.label });
+    panel.appendChild(el("div", { className: "pfs-wa-foot" }, [status, go]));
+
+    function submit() {
+      const parcel = {};
+      const bad = [];
+      PARCEL_FIELDS.forEach(function (f) {
+        const n = parseParcelNumber(inputs[f.key].value);
+        if (n === null) return;
+        if (isNaN(n)) bad.push(f.label);
+        else parcel[f.key] = Math.round(n * 100) / 100;
+      });
+      if (bad.length) {
+        status.textContent = "Valeur invalide : " + bad.join(", ") + " (nombre positif, ex. 12,5).";
+        return;
+      }
+      _parcelDims = parcel;
+      parcelClose();
+      carrier.open(Object.keys(parcel).length ? parcel : null);
+    }
+    go.addEventListener("click", submit);
+    // Les écouteurs clavier de nos éléments ne reçoivent rien (bouclier
+    // 3.34.0) : Entrée / Échap passent par __pfsOnKey.
+    overlay.__pfsOnKey = function (e) {
+      if (e.key === "Enter") { e.preventDefault(); submit(); return true; }
+      if (e.key === "Escape") { parcelClose(); return true; }
+      return false;
+    };
+
+    document.body.appendChild(overlay);
+    setTimeout(function () { try { inputs.length.focus(); } catch (e) { /* ignore */ } }, 0);
+  }
+
   // Ouvre https://easy-express.fr/shipping dans un nouvel onglet. ee-content.js
   // y cherche le client dans le carnet d'adresses (société + adresse + CP +
   // ville + pays + téléphone + email) et le sélectionne, sinon le crée.
-  function openEasyExpressFromOrder() {
+  function openEasyExpressFromOrder(parcel) {
     if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
     const orderInfo = _currentOrderInfo || {};
     const receiver = eeExtractReceiverFromOrder(orderInfo);
@@ -2380,7 +2490,8 @@
     const payload = {
       receiver: receiver,
       orderNo: orderInfo.orderNo || "",
-      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null
+      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null,
+      parcel: parcel || null
     };
     try {
       chrome.runtime.sendMessage({ type: "OPEN_EE_SHIPPING", payload: payload }, function (res) {
@@ -2402,7 +2513,7 @@
   // onglet. x37-content.js y cherche le client dans le carnet d'adresses
   // (société + rue + CP + ville + pays), le sélectionne ou le crée, puis passe
   // à l'étape « Colis ».
-  function open37ExpressFromOrder() {
+  function open37ExpressFromOrder(parcel) {
     if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
     const orderInfo = _currentOrderInfo || {};
     const receiver = eeExtractReceiverFromOrder(orderInfo);
@@ -2414,7 +2525,8 @@
     const payload = {
       receiver: receiver,
       orderNo: orderInfo.orderNo || "",
-      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null
+      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null,
+      parcel: parcel || null
     };
     try {
       chrome.runtime.sendMessage({ type: "OPEN_37_SHIPPING", payload: payload }, function (res) {
@@ -2438,7 +2550,7 @@
   // le crée, passe à l'étape « Colis » ; sur la liste des transporteurs, la
   // case « Assurance » est cochée partout, et à l'étape « Assurance » la
   // valeur à assurer = total HT du regroupement.
-  function openSmarty365FromOrder() {
+  function openSmarty365FromOrder(parcel) {
     if (!isExtensionContextAlive()) { alert(CONTEXT_LOST_MSG); return; }
     const orderInfo = _currentOrderInfo || {};
     const receiver = eeExtractReceiverFromOrder(orderInfo);
@@ -2450,7 +2562,8 @@
     const payload = {
       receiver: receiver,
       orderNo: orderInfo.orderNo || "",
-      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null
+      parcelValue: totalHT > 0 ? Math.round(totalHT * 100) / 100 : null,
+      parcel: parcel || null
     };
     try {
       chrome.runtime.sendMessage({ type: "OPEN_S365_SHIPPING", payload: payload }, function (res) {
@@ -3150,12 +3263,15 @@
   // Regroupe les items résolus en lignes Sage : une ligne par (article Sage,
   // prix, référence produit), avec le détail des couleurs et la quantité
   // totale. Partagé par l'export CSV et la création directe (SageBridge).
-  function aggregateSageItems(items) {
+  // `simple` (option « Description simple », 3.37.0) : la référence produit
+  // n'est pas affichée, donc les lignes d'un même article au même prix sont
+  // fusionnées (sinon plusieurs lignes identiques, une par référence).
+  function aggregateSageItems(items, simple) {
     const agg = new Map();
     const missing = [];
     for (const it of items) {
       const code = it.code || "";
-      const refKey = it.ref || it.name || "";
+      const refKey = simple ? "" : (it.ref || it.name || "");
       const key = code + "||" + it.prixUnitaire.toFixed(4) + "||" + refKey;
       if (!agg.has(key)) {
         agg.set(key, {
@@ -3241,15 +3357,24 @@
   // seule la description change : texte brut multi-lignes (le COM stocke le
   // RTF tel quel, vérifié le 19/10/2026), « LIBELLÉ - réf » puis une ligne
   // par couleur.
-  function buildSageBridgePayload(items) {
-    const aggregated = aggregateSageItems(items);
+  // Option « Description simple » (3.37.0, réglage `sageSimpleDesc` dans les
+  // Options) : ni référence ni couleurs, la description de la ligne est la
+  // désignation de l'article dans Sage 50 (`articleNames` : code → nom, lu par
+  // GET /articles de SageBridge).
+  function buildSageBridgePayload(items, simple, articleNames) {
+    const aggregated = aggregateSageItems(items, simple);
     const lines = [];
     for (const l of aggregated.list) {
-      const label = l.descLabel || sageArticleLabel(l.code);
-      let desc = label ? label.toUpperCase() : "";
-      if (l.ref) desc += (desc ? " - " : "") + l.ref;
-      for (const entry of l.colors.entries()) {
-        desc += "\n" + entry[0] + " x" + entry[1];
+      let desc;
+      if (simple) {
+        desc = (articleNames && articleNames[l.code]) || "";
+      } else {
+        const label = l.descLabel || sageArticleLabel(l.code);
+        desc = label ? label.toUpperCase() : "";
+        if (l.ref) desc += (desc ? " - " : "") + l.ref;
+        for (const entry of l.colors.entries()) {
+          desc += "\n" + entry[0] + " x" + entry[1];
+        }
       }
       lines.push({
         code: l.code,
@@ -3344,8 +3469,23 @@
   }
 
   async function finishSageBridge(items) {
-    const built = buildSageBridgePayload(items);
     const btn = document.getElementById("pfs-sage-direct-btn");
+    const opts = await new Promise(function (resolve) {
+      try { chrome.storage.sync.get(["sageSimpleDesc"], function (r) { resolve(r || {}); }); }
+      catch (e) { resolve({}); }
+    });
+    const simple = !!opts.sageSimpleDesc;
+    let articleNames = null;
+    if (simple) {
+      // Désignations des articles Sage. Si la liste n'arrive pas, la
+      // description est envoyée vide : SageBridge ne l'écrit alors pas.
+      const listed = await sageListArticles();
+      articleNames = {};
+      (listed.articles || []).forEach(function (a) {
+        if (a && a.code) articleNames[a.code] = a.nom || "";
+      });
+    }
+    const built = buildSageBridgePayload(items, simple, articleNames);
     if (built.missing.length) {
       sageBridgeStatus(
         "Impossible de créer la facture : aucun code article Sage pour " + built.missing.join(", ") +

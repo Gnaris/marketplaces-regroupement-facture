@@ -7,6 +7,7 @@
     validateShopKey: $("validateShopKey"),
     shopKeyStatus: $("shopKeyStatus"),
     waShopName: $("waShopName"),
+    sageSimpleDesc: $("sageSimpleDesc"),
     save: $("save"),
     saveStatus: $("saveStatus")
   };
@@ -18,9 +19,10 @@
   }
 
   function load() {
-    chrome.storage.sync.get(["sageShopKey", "waShopName"], function (res) {
+    chrome.storage.sync.get(["sageShopKey", "waShopName", "sageSimpleDesc"], function (res) {
       el.shopKey.value = res.sageShopKey || "";
       el.waShopName.value = res.waShopName || "";
+      el.sageSimpleDesc.checked = !!res.sageSimpleDesc;
       setStatus(el.shopKeyStatus, res.sageShopKey ? "Mot de passe enregistré (non revérifié)" : "Aucun mot de passe enregistré", "muted");
     });
     // Nettoyage des anciens réglages de l'API Easy-Express (retirée en 3.31.0).
@@ -53,7 +55,7 @@
 
   // ─── Enregistrer ───────────────────────────────────────────────────
   el.save.addEventListener("click", function () {
-    chrome.storage.sync.set({ sageShopKey: el.shopKey.value.trim(), waShopName: el.waShopName.value.trim() }, function () {
+    chrome.storage.sync.set({ sageShopKey: el.shopKey.value.trim(), waShopName: el.waShopName.value.trim(), sageSimpleDesc: el.sageSimpleDesc.checked }, function () {
       if (chrome.runtime.lastError) {
         setStatus(el.saveStatus, "Erreur stockage : " + chrome.runtime.lastError.message, "err");
       } else {

@@ -201,20 +201,41 @@
     return !!ok;
   }
 
+  // Valeur déclarée + dimensions / poids saisis dans le modal (3.36.0) :
+  // appObj.parcel.{weight, length, width, height} (chaînes, kg / cm), liés aux
+  // champs « Poids(kg) », « Longueur(cm) », « Largeur(cm) », « Hauteur(cm) ».
+  // Seules les valeurs données sont écrites ; « Ajouter le colis » reste à Boris.
+  // Focus sur le premier champ encore vide, dans l'ordre de la page.
   function prepareParcel(prefill) {
     const app = getApp();
+    const dims = prefill.parcel || {};
+    const done = [];
     try {
       if (app && app.parcel && prefill.parcelValue && !app.parcel.objValue) {
         app.parcel.objValue = prefill.parcelValue;
       }
+      if (app && app.parcel) {
+        [["weight", "poids", " kg"], ["length", "longueur", " cm"], ["width", "largeur", " cm"], ["height", "hauteur", " cm"]].forEach(function (f) {
+          const v = dims[f[0]];
+          if (v > 0) { app.parcel[f[0]] = String(v); done.push(f[1] + " " + String(v).replace(".", ",") + f[2]); }
+        });
+      }
     } catch (e) { /* ignore */ }
-    const label = [].find.call(document.querySelectorAll("label"), function (l) { return /Poids\s*\(kg\)/i.test(l.textContent); });
-    const box = label && label.closest("div");
-    const input = box && box.querySelector("input");
-    if (input) {
-      input.scrollIntoView({ behavior: "smooth", block: "center" });
-      setTimeout(function () { try { input.focus(); } catch (e) { /* ignore */ } }, 400);
-    }
+    const fields = [["weight", /Poids\s*\(kg\)/i], ["length", /Longueur/i], ["width", /Largeur/i], ["height", /Hauteur/i]];
+    let input = null;
+    setTimeout(function () {
+      for (let i = 0; i < fields.length && !input; i++) {
+        const label = [].find.call(document.querySelectorAll("label"), function (l) { return fields[i][1].test(l.textContent); });
+        const box = label && label.closest("div");
+        const inp = box && box.querySelector("input");
+        if (inp && !String(inp.value || "").trim()) input = inp;
+      }
+      if (input) {
+        input.scrollIntoView({ behavior: "smooth", block: "center" });
+        setTimeout(function () { try { input.focus(); } catch (e) { /* ignore */ } }, 400);
+      }
+    }, 200);
+    return done;
   }
 
   async function openPrefilledForm(fields) {
@@ -246,8 +267,10 @@
   }
 
   function finish(kind, text, prefill) {
-    banner(kind, text, "Saisissez le poids du colis puis cliquez sur « Ajouter le colis » pour afficher la liste des transporteurs.");
-    prepareParcel(prefill);
+    const done = prepareParcel(prefill);
+    banner(kind, text, done.length
+      ? "Colis : " + done.join(", ") + ". Complétez si besoin puis cliquez sur « Ajouter le colis » pour afficher la liste des transporteurs."
+      : "Saisissez le poids du colis puis cliquez sur « Ajouter le colis » pour afficher la liste des transporteurs.");
     window.postMessage({ source: "ee-regroup", type: "EE_DONE" }, ORIGIN);
   }
 

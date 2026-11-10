@@ -37,6 +37,7 @@
   let started = false;
   const autoInsured = new WeakSet();   // tarifs déjà pré-cochés une fois
   const insuranceDone = new WeakSet(); // composants add-insurance déjà traités
+  let parcelFilled = false;             // dimensions / poids du modal déjà saisis (3.36.0)
 
   window.addEventListener("message", function (ev) {
     if (ev.source !== window || !ev.data || ev.data.source !== "s365-regroup-ext") return;
@@ -114,9 +115,49 @@
           banner("err", "Smarty365 : " + ((err && err.message) || String(err)));
         }).then(function () { addressState = "done"; });
       }
+      if (st.step === 2 && data && data.parcel && !parcelFilled) fillParcel();
       if (st.step === 3) insuranceDefaults(st);
       if (st.step === 5 && data) fillInsurance();
     } catch (e) { /* page en cours de rendu : on réessaie au tour suivant */ }
+  }
+
+  // ─── Étape 2 : « Colis » — dimensions / poids saisis dans le modal (3.36.0) ───
+  // Composant add-parcel-form : data length / width / height (cm) et
+  // parcel.weight (kg), liés aux champs « Longueur(CM) », « Largeur(CM) »,
+  // « Hauteur(CM) », « Poid(KG) ». Seules les valeurs données sont écrites,
+  // une seule fois ; « Ajouter » puis « Continuer » restent à Boris.
+  function fillParcel() {
+    const form = findVms("add-parcel-form")[0];
+    if (!form || !form.parcel) return;
+    parcelFilled = true;
+    const dims = data.parcel || {};
+    const labels = { length: "longueur", width: "largeur", height: "hauteur", weight: "poids" };
+    const done = [];
+    const missing = [];
+    ["length", "width", "height"].forEach(function (k) {
+      const v = dims[k];
+      if (v > 0) { form[k] = Number(v); done.push(labels[k] + " " + String(v).replace(".", ",") + " cm"); }
+      else if (!form[k]) missing.push(k);
+    });
+    if (dims.weight > 0) { form.$set(form.parcel, "weight", Number(dims.weight)); done.push("poids " + String(dims.weight).replace(".", ",") + " kg"); }
+    else if (!form.parcel.weight) missing.push("weight");
+    if (!done.length) return;
+    banner("ok", "Colis : " + done.join(", ") + ".",
+      (missing.length ? "À compléter : " + missing.map(function (k) { return labels[k]; }).join(", ") + ". " : "") +
+      "Cliquez « Ajouter » puis « Continuer » pour voir les transporteurs (assurance cochée par défaut).");
+    // Focus sur le premier champ restant (ordre : longueur, largeur, hauteur, poids).
+    form.$nextTick(function () {
+      const rx = { length: /longueur/i, width: /largeur/i, height: /hauteur/i, weight: /poid/i };
+      if (!missing.length) return;
+      const inputs = form.$el.querySelectorAll("input");
+      for (let i = 0; i < inputs.length; i++) {
+        const lab = inputs[i].id ? document.querySelector('label[for="' + inputs[i].id + '"]') : null;
+        if (inputs[i].offsetParent && lab && rx[missing[0]].test(lab.textContent || "")) {
+          try { inputs[i].scrollIntoView({ block: "center" }); inputs[i].focus(); } catch (e) { /* ignore */ }
+          break;
+        }
+      }
+    });
   }
 
   // ─── Étape 3 : « Assurance » cochée par défaut ───
@@ -465,13 +506,16 @@
     }
     if (data) data.addressDone = true;
     window.postMessage({ source: "s365-regroup", type: "S365_ADDRESS_DONE" }, ORIGIN);
-    banner("ok", "Destinataire " + how + " : " + label, "Passage à l'étape « Colis » : saisissez le poids, « Ajouter », puis « Continuer » pour voir les transporteurs (assurance cochée par défaut).");
+    banner("ok", "Destinataire " + how + " : " + label, data && data.parcel
+      ? "Passage à l'étape « Colis » : dimensions / poids de la commande saisis ensuite."
+      : "Passage à l'étape « Colis » : saisissez le poids, « Ajouter », puis « Continuer » pour voir les transporteurs (assurance cochée par défaut).");
     await sleep(1200);
     const btn = continueButton();
     if (!btn || btn.disabled) return;
     btn.click();
     const atColis = await waitFor(function () { const st = parcelState(); return st && st.step === 2; }, 8000);
     if (!atColis) return;
+    if (data && data.parcel) return; // fillParcel() s'en charge (boucle tick)
     await sleep(500);
     const inputs = document.querySelectorAll("input[type=number]");
     for (let i = 0; i < inputs.length; i++) {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Marketplaces Regroupement Facture",
-  "version": "3.35.1",
+  "version": "3.37.0",
   "permissions": ["storage"],
   "description": "Regroupe les articles d'une commande par catégorie et prix unitaire — Paris Fashion Shop + Efashion Paris + Ankorstore + Faire + Microstore + Orderchamp + Shopify + Beli & Jolie + Bijoux Mystères + Issyma. Ouvre Easy Express avec le client sélectionné (ou créé) dans le carnet d'adresses, fait de même sur 37 Express et Smarty365 (assurance cochée et valeur à assurer remplie), envoie des messages WhatsApp à partir de modèles et crée les factures provisoires dans Sage 50 (via SageBridge).",
   "host_permissions": [

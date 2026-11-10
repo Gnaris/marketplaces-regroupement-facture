@@ -20,8 +20,12 @@
         // Ailleurs (connexion, colis…) on garde les données pour plus tard.
         const onAddress = !!document.getElementById("shipping_address_id");
         const onInsurance = !!document.getElementById("parcel-insurance-form");
+        // Étape « Colis » (3.36.0) : dimensions / poids saisis dans le modal,
+        // une seule fois.
+        const onPackage = !!document.getElementById("package-weight");
         if (onAddress && res.data.addressDone) return;
-        if (!onAddress && !onInsurance) return;
+        if (onPackage && (res.data.packageDone || !res.data.parcel)) return;
+        if (!onAddress && !onInsurance && !onPackage) return;
         prefill = res.data;
         inject();
       });
@@ -36,6 +40,8 @@
       } else if (ev.data.type === "X37_ADDRESS_DONE") {
         // Destinataire choisi : on garde la valeur du colis pour l'assurance.
         try { chrome.runtime.sendMessage({ type: "X37_ADDRESS_DONE" }); } catch (e) { /* ignore */ }
+      } else if (ev.data.type === "X37_PACKAGE_DONE") {
+        try { chrome.runtime.sendMessage({ type: "X37_PACKAGE_DONE" }); } catch (e) { /* ignore */ }
       } else if (ev.data.type === "X37_DONE") {
         try { chrome.runtime.sendMessage({ type: "X37_PREFILL_DONE" }); } catch (e) { /* ignore */ }
       }

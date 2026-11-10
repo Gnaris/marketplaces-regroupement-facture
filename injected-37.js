@@ -35,7 +35,9 @@
     if (ev.data.type !== "X37_PREFILL" || started) return;
     started = true;
     const data = ev.data.data || {};
-    const job = document.getElementById("parcel-insurance-form") ? runInsurance(data) : run(data);
+    const job = document.getElementById("parcel-insurance-form") ? runInsurance(data)
+      : document.getElementById("package-weight") ? runPackage(data)
+      : run(data);
     job.catch(function (err) {
       banner("err", "37 Express : " + ((err && err.message) || String(err)));
     });
@@ -281,12 +283,63 @@
       const h = document.getElementById("shipping_address_html");
       return h && h.textContent.trim() && selectedId();
     }, 15000);
-    banner("ok", "Destinataire " + how + " : " + label, "Passage à l'étape « Colis » : saisissez le poids puis « Suivant » pour voir les transporteurs.");
+    banner("ok", "Destinataire " + how + " : " + label, "Passage à l'étape « Colis »" +
+      (window.__x37HasParcel ? " : dimensions / poids de la commande saisis ensuite." : " : saisissez le poids puis « Suivant » pour voir les transporteurs."));
     await sleep(1200);
     goToPackageStep();
   }
 
+  // ─── Étape « Colis » (/express/parcel/package/, 3.36.0) ───
+  // Formulaire « Ajouter colis » en haut de la page : champs name=length /
+  // width / height (cm) et #package-weight (kg). On reproduit ce que fait la
+  // page quand on choisit une dimension favorite (logistic_parcel_package_
+  // favorites.set) : value + JSExt.Event.fire(input, "blur"). Seules les
+  // valeurs saisies dans le modal sont écrites ; « Ajouter » reste à Boris.
+  async function runPackage(data) {
+    const dims = data.parcel || {};
+    const form = await waitFor(function () { return document.querySelector(".parcel-package-add-form"); }, 15000);
+    if (!form) return;
+    const J = getJsExt();
+    const order = [
+      { key: "length", label: "longueur", el: form.querySelector('input[name="length"]') },
+      { key: "width", label: "largeur", el: form.querySelector('input[name="width"]') },
+      { key: "height", label: "hauteur", el: form.querySelector('input[name="height"]') },
+      { key: "weight", label: "poids", el: document.getElementById("package-weight") }
+    ];
+    const done = [];
+    const missing = [];
+    for (let i = 0; i < order.length; i++) {
+      const f = order[i];
+      if (!f.el) continue;
+      const v = dims[f.key];
+      if (v == null || !(v > 0)) { if (!String(f.el.value || "").trim()) missing.push(f); continue; }
+      f.el.value = String(v);
+      try {
+        if (J && J.Event && J.Event.fire) J.Event.fire(f.el, "blur");
+        else f.el.dispatchEvent(new Event("blur"));
+      } catch (e) { /* ignore */ }
+      try { f.el.dispatchEvent(new Event("input", { bubbles: true })); f.el.dispatchEvent(new Event("change", { bubbles: true })); } catch (e) { /* ignore */ }
+      const box = f.el.closest(".el-box");
+      if (box) box.classList.add("focus");
+      done.push(f.label + " " + String(v).replace(".", ",") + (f.key === "weight" ? " kg" : " cm"));
+    }
+    window.postMessage({ source: "x37-regroup", type: "X37_PACKAGE_DONE" }, ORIGIN);
+    if (!done.length) return;
+    let target = missing.length ? missing[0].el : null;
+    if (!target) {
+      const btns = form.parentElement ? form.parentElement.querySelectorAll("button.add-package") : [];
+      target = btns.length ? btns[0] : null;
+    }
+    if (target) {
+      try { target.scrollIntoView({ block: "center" }); target.focus(); } catch (e) { /* ignore */ }
+    }
+    banner("ok", "Colis : " + done.join(", ") + ".",
+      (missing.length ? "À compléter : " + missing.map(function (f) { return f.label; }).join(", ") + ". " : "") +
+      "Cliquez « Ajouter » puis « Suivant » pour voir les transporteurs.");
+  }
+
   async function run(data) {
+    window.__x37HasParcel = !!(data && data.parcel);
     const r = data.receiver || {};
     const title = [r.company, [r.postalCode, r.city].filter(Boolean).join(" ")].filter(Boolean).join(" — ");
     banner("info", "37 Express : recherche du client dans le carnet d'adresses…", title);

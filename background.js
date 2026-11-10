@@ -254,6 +254,14 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     return true;
   }
 
+  // Dimensions / poids saisis à l'étape « Colis » : ne pas les ressaisir.
+  if (message.type === "X37_PACKAGE_DONE") {
+    const t = sender && sender.tab ? sender.tab.id : null;
+    (t == null ? Promise.resolve() : markPrefillFlag(x37PrefillKey(t), "packageDone"))
+      .then(function () { sendResponse({ ok: true }); });
+    return true;
+  }
+
   if (message.type === "X37_PREFILL_DONE") {
     x37ClearPrefill(sender && sender.tab ? sender.tab.id : null)
       .then(function () { sendResponse({ ok: true }); });
@@ -766,6 +774,30 @@ const EE_PREFILL_TTL_MS = 30 * 60 * 1000;
 
 function eePrefillKey(tabId) { return "eeShipPrefill_" + tabId; }
 
+// Dimensions / poids du colis saisis dans le modal (3.36.0), tous facultatifs :
+// { length, width, height (cm), weight (kg) } — seules les valeurs > 0 restent.
+function sanitizeParcelDims(p) {
+  if (!p || typeof p !== "object") return null;
+  const out = {};
+  ["length", "width", "height", "weight"].forEach(function (k) {
+    const n = Number(p[k]);
+    if (isFinite(n) && n > 0) out[k] = Math.round(n * 100) / 100;
+  });
+  return Object.keys(out).length ? out : null;
+}
+
+// Pose un indicateur (addressDone, packageDone…) dans le payload d'un onglet.
+async function markPrefillFlag(key, flag) {
+  const res = await new Promise(function (resolve) { chrome.storage.local.get([key], resolve); });
+  const p = res && res[key];
+  if (!p) return;
+  p[flag] = true;
+  await new Promise(function (resolve) {
+    const o = {}; o[key] = p;
+    chrome.storage.local.set(o, function () { resolve(); });
+  });
+}
+
 async function openEasyExpressShipping(payload) {
   const tab = await new Promise(function (resolve, reject) {
     chrome.tabs.create({ url: EE_SHIPPING_URL, active: true }, function (t) {
@@ -777,6 +809,7 @@ async function openEasyExpressShipping(payload) {
     receiver: payload.receiver || {},
     orderNo: payload.orderNo || "",
     parcelValue: payload.parcelValue || null,
+    parcel: sanitizeParcelDims(payload.parcel),
     timestamp: Date.now()
   };
   await new Promise(function (resolve) {
@@ -832,6 +865,7 @@ async function open37ExpressShipping(payload) {
     receiver: payload.receiver || {},
     orderNo: payload.orderNo || "",
     parcelValue: payload.parcelValue || null,
+    parcel: sanitizeParcelDims(payload.parcel),
     timestamp: Date.now()
   };
   await new Promise(function (resolve) {
@@ -896,6 +930,7 @@ async function openSmarty365Shipping(payload) {
     receiver: payload.receiver || {},
     orderNo: payload.orderNo || "",
     parcelValue: payload.parcelValue || null,
+    parcel: sanitizeParcelDims(payload.parcel),
     timestamp: Date.now()
   };
   await new Promise(function (resolve) {

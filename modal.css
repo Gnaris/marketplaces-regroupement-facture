@@ -734,7 +734,7 @@
 }
 #pfs-wa-btn:hover { background: #15803d; border-color: #15803d; }
 
-#pfs-wa-overlay {
+#pfs-wa-overlay, #pfs-parcel-overlay {
   position: fixed;
   inset: 0;
   z-index: 2147483647;
@@ -745,7 +745,7 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: #111;
 }
-#pfs-wa-panel {
+#pfs-wa-panel, #pfs-parcel-panel {
   background: #fff;
   border-radius: 14px;
   width: min(560px, 94vw);
@@ -882,3 +882,10 @@
   cursor: pointer;
 }
 .pfs-wa-send:hover { background: #15803d; }
+
+/* Panneau « Colis » avant ouverture d'un transporteur (3.36.0) */
+#pfs-parcel-panel { width: min(440px, 94vw); }
+.pfs-parcel-intro { font-size: 13px; color: #4b5563; margin-bottom: 12px; line-height: 1.4; }
+.pfs-parcel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.pfs-parcel-go { background: #111827; }
+.pfs-parcel-go:hover { background: #374151; }
