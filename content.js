@@ -3360,33 +3360,48 @@
   // Options « Référence produit » / « Couleurs » (3.38.0, réglages
   // `sageDescRef` / `sageDescColors`, cochés par défaut) : `opt.ref` ajoute
   // « - réf » au libellé, `opt.colors` une ligne « Couleur xN » par couleur.
-  // Les deux décochées : la description est la désignation de l'article dans
-  // Sage 50 (`articleNames` : code → nom, lu par GET /articles de SageBridge).
+  // Depuis 3.39.0 (demande de Boris, 11/11/2026) le libellé est TOUJOURS la
+  // désignation de l'article dans Sage 50, telle quelle (`articleNames` :
+  // code → nom, lu par GET /articles de SageBridge) — plus la catégorie du
+  // produit. Référence et couleurs ne font que s'ajouter après. Sans
+  // désignation connue et sans ajout, la description part vide : SageBridge
+  // ne l'écrit pas et Sage garde la désignation par défaut de l'article.
   function buildSageBridgePayload(items, opt, articleNames) {
     const aggregated = aggregateSageItems(items, !opt.ref);
     const lines = [];
     for (const l of aggregated.list) {
-      let desc;
-      if (!opt.ref && !opt.colors) {
-        desc = (articleNames && articleNames[l.code]) || "";
-      } else {
-        const label = l.descLabel || sageArticleLabel(l.code);
-        desc = label ? label.toUpperCase() : "";
-        if (opt.ref && l.ref) desc += (desc ? " - " : "") + l.ref;
-        if (opt.colors) {
-          for (const entry of l.colors.entries()) {
-            desc += "\n" + entry[0] + " x" + entry[1];
-          }
+      const sageName = (articleNames && articleNames[l.code]) || "";
+      let extra = "";
+      if (opt.ref && l.ref) extra += " - " + l.ref;
+      if (opt.colors) {
+        for (const entry of l.colors.entries()) {
+          extra += "\n" + entry[0] + " x" + entry[1];
         }
       }
+      let desc = "";
+      if (sageName) desc = sageName + extra;
+      else if (extra) desc = (sageArticleLabel(l.code) || l.code) + extra;
       lines.push({
         code: l.code,
         qty: l.quantite,
         puht: Math.round(l.prixUnitaire * 10000) / 10000,
         tva: parseFloat(SAGE_TVA_RATE.replace(",", ".")),
-        description: desc
+        description: desc,
+        _group: sageName || l.code
       });
     }
+    // Tri (3.39.0, demande de Boris) : lignes regroupées par désignation Sage
+    // (ordre de première apparition), puis prix unitaire croissant dans
+    // chaque désignation. Tri stable : à prix égal, l'ordre d'origine reste.
+    const groupOrder = {};
+    lines.forEach(function (ln, i) {
+      if (!(ln._group in groupOrder)) groupOrder[ln._group] = i;
+      ln._idx = i;
+    });
+    lines.sort(function (a, b) {
+      return (groupOrder[a._group] - groupOrder[b._group]) || (a.puht - b.puht) || (a._idx - b._idx);
+    });
+    lines.forEach(function (ln) { delete ln._group; delete ln._idx; });
     return {
       payload: {
         site: site || "",
@@ -3484,8 +3499,10 @@
       ref: typeof opts.sageDescRef === "boolean" ? opts.sageDescRef : !legacy,
       colors: typeof opts.sageDescColors === "boolean" ? opts.sageDescColors : !legacy
     };
+    // Le libellé de la description est TOUJOURS la désignation de l'article
+    // Sage (3.39.0) : la liste des articles est lue à chaque création.
     let articleNames = null;
-    if (!descOpt.ref && !descOpt.colors) {
+    {
       // Désignations des articles Sage. Si la liste n'arrive pas, la
       // description est envoyée vide : SageBridge ne l'écrit alors pas.
       const listed = await sageListArticles();

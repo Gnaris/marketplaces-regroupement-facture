@@ -23,7 +23,7 @@
     chrome.storage.sync.get(["sageShopKey", "waShopName", "sageSimpleDesc", "sageDescRef", "sageDescColors"], function (res) {
       el.shopKey.value = res.sageShopKey || "";
       el.waShopName.value = res.waShopName || "";
-      // Par défaut : référence et couleurs affichées ; l'ancienne case
+      // Par défaut : référence et couleurs ajoutées ; l'ancienne case
       // « Description simple » (3.37.0) cochée = les deux décochées.
       const legacy = res.sageSimpleDesc === true;
       el.sageDescRef.checked = typeof res.sageDescRef === "boolean" ? res.sageDescRef : !legacy;
@@ -31,8 +31,7 @@
       setStatus(el.shopKeyStatus, res.sageShopKey ? "Mot de passe enregistré (non revérifié)" : "Aucun mot de passe enregistré", "muted");
     });
     // Nettoyage des anciens réglages de l'API Easy-Express (retirée en 3.31.0).
-    chrome.storage.sync.remove(["easyExpressToken", "easyExpressSender"]);
-    chrome.storage.local.remove(["eePrefill", "eeDraftReceiver"]);
+    chrome.storage.sync.remove(["easyExpressToken", "easyExpressSender"]);    chrome.storage.local.remove(["eePrefill", "eeDraftReceiver"]);
   }
 
   el.toggleShopKey.addEventListener("click", function () {
